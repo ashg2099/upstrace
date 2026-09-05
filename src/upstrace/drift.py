@@ -1,0 +1,150 @@
+from dataclasses import dataclass
+
+import duckdb
+
+from .config import METRICS_SCHEMA
+
+# Ek metric kitna hil sakta hai isse pehle ki hum use drift kahein.
+THRESHOLDS = {
+    "row_count":      0.02,   # 2% relative
+    "null_rate":      0.01,   # 1 percentage point, absolute
+    "distinct_count": 0.10,   # 10% relative
+    "mean_value":     0.05,   # 5% relative
+}
+
+
+@dataclass
+class Signal:
+    model_name: str
+    column_name: str
+    metric: str
+    baseline: float | None
+    current: float | None
+    change: float
+    severity: str
+
+
+def ensure_drift_table(con: duckdb.DuckDBPyConnection) -> None:
+    con.execute(f"""
+        CREATE TABLE IF NOT EXISTS {METRICS_SCHEMA}.drift_signals (
+            detected_at      TIMESTAMP,
+            run_id           VARCHAR,
+            baseline_run_id  VARCHAR,
+            model_name       VARCHAR,
+            column_name      VARCHAR,
+            metric           VARCHAR,
+            baseline_value   DOUBLE,
+            current_value    DOUBLE,
+            change           DOUBLE,
+            severity         VARCHAR
+        )
+    """)
+
+
+def latest_runs(con: duckdb.DuckDBPyConnection, n: int = 2) -> list[str]:
+    rows = con.execute(
+        f"select run_id from {METRICS_SCHEMA}.profile_runs order by started_at desc limit {n}"
+    ).fetchall()
+    return [r[0] for r in rows]
+
+
+def _relative(baseline: float | None, current: float | None) -> float:
+    if baseline in (None, 0):
+        return 0.0 if current in (None, 0) else 1.0
+    if current is None:
+        return 1.0
+    return abs(current - baseline) / abs(baseline)
+
+
+def _severity(metric: str, change: float) -> str:
+    limit = THRESHOLDS[metric]
+    if change >= limit * 5:
+        return "critical"
+    if change >= limit * 2:
+        return "high"
+    return "warning"
+
+
+def detect(
+    con: duckdb.DuckDBPyConnection,
+    run_id: str | None = None,
+    baseline_run_id: str | None = None,
+) -> list[Signal]:
+    ensure_drift_table(con)
+
+    if run_id is None or baseline_run_id is None:
+        runs = latest_runs(con, 2)
+        if len(runs) < 2:
+            raise SystemExit(
+                "Need at least two profile runs to compare. Run: upstrace profile"
+            )
+        run_id = run_id or runs[0]
+        baseline_run_id = baseline_run_id or runs[1]
+
+    rows = con.execute(
+        f"""
+        select
+            b.model_name, b.column_name,
+            b.row_count, c.row_count,
+            b.null_rate, c.null_rate,
+            b.distinct_count, c.distinct_count,
+            b.mean_value, c.mean_value,
+            b.min_value, c.min_value,
+            b.max_value, c.max_value
+        from {METRICS_SCHEMA}.column_profiles b
+        join {METRICS_SCHEMA}.column_profiles c
+          on b.model_name = c.model_name
+         and b.column_name = c.column_name
+        where b.run_id = ? and c.run_id = ?
+        """,
+        [baseline_run_id, run_id],
+    ).fetchall()
+
+    signals: list[Signal] = []
+
+    for (
+        model, column,
+        b_rows, c_rows,
+        b_null, c_null,
+        b_distinct, c_distinct,
+        b_mean, c_mean,
+        b_min, c_min,
+        b_max, c_max,
+    ) in rows:
+
+        checks = [
+            ("row_count", b_rows, c_rows, _relative(b_rows, c_rows)),
+            ("null_rate", b_null, c_null, abs((c_null or 0) - (b_null or 0))),
+            ("distinct_count", b_distinct, c_distinct, _relative(b_distinct, c_distinct)),
+        ]
+        if b_mean is not None or c_mean is not None:
+            checks.append(("mean_value", b_mean, c_mean, _relative(b_mean, c_mean)))
+
+        for metric, baseline, current, change in checks:
+            if change >= THRESHOLDS[metric]:
+                signals.append(
+                    Signal(model, column, metric, baseline, current,
+                           change, _severity(metric, change))
+                )
+
+        # min/max strings hain: inka koi bhi badalna bolne layak hai.
+        for metric, baseline, current in (("min_value", b_min, c_min),
+                                          ("max_value", b_max, c_max)):
+            if baseline != current:
+                signals.append(
+                    Signal(model, column, metric, None, None, 1.0, "warning")
+                )
+
+    order = {"critical": 0, "high": 1, "warning": 2}
+    signals.sort(key=lambda s: (order[s.severity], -s.change))
+
+    con.execute(f"delete from {METRICS_SCHEMA}.drift_signals where run_id = ?", [run_id])
+    for s in signals:
+        con.execute(
+            f"""INSERT INTO {METRICS_SCHEMA}.drift_signals
+                VALUES (now(), ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            [run_id, baseline_run_id, s.model_name, s.column_name, s.metric,
+             s.baseline, s.current, s.change, s.severity],
+        )
+
+    return signals

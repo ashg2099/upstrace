@@ -1,9 +1,9 @@
-"""The upstrace command line."""
-
 import typer
 from rich.console import Console
 from rich.table import Table
 
+from . import drift as drift_mod
+from . import faults as faults_mod
 from .config import METRICS_SCHEMA
 from .manifest import list_models
 from .profiler import run_profile
@@ -94,6 +94,74 @@ def history(
     console.print(table)
     con.close()
 
+SEVERITY_STYLE = {"critical": "bold red", "high": "red", "warning": "yellow"}
+
+
+@app.command()
+def fault(
+    name: str = typer.Argument(..., help="Fault key, or 'list', or 'reset'."),
+    since: str = typer.Option("2024-03-01", "--since", help="Apply from this date onward."),
+) -> None:
+    """Break the raw data on purpose, or put it back."""
+    if name == "list":
+        table = Table(title="Available faults")
+        table.add_column("key", style="bold")
+        table.add_column("what breaks")
+        for f in faults_mod.FAULTS.values():
+            table.add_row(f.key, f.description)
+        console.print(table)
+        return
+
+    con = connect()
+
+    if name == "reset":
+        rows = faults_mod.reset(con)
+        console.print(f"raw.yellow_trips reloaded from parquet: {rows:,} rows")
+    else:
+        faults_mod.inject(con, name, since)
+        console.print(
+            f"injected [bold red]{name}[/bold red] from {since} onward\n"
+            f"[dim]{faults_mod.FAULTS[name].description}[/dim]"
+        )
+
+    con.close()
+    console.print("\nNow rebuild and look:")
+    console.print("  cd transform && dbt run && dbt test; cd ..")
+    console.print("  upstrace profile")
+    console.print("  upstrace drift")
+
+
+@app.command()
+def drift() -> None:
+    """Compare the two most recent profile runs and report what moved."""
+    con = connect()
+    signals = drift_mod.detect(con)
+
+    if not signals:
+        console.print("No drift above threshold. Nothing moved.")
+        con.close()
+        return
+
+    table = Table(title=f"{len(signals)} drift signals")
+    table.add_column("severity")
+    table.add_column("model", style="bold")
+    table.add_column("column", style="bold")
+    table.add_column("metric")
+    table.add_column("baseline", justify="right")
+    table.add_column("current", justify="right")
+    table.add_column("change", justify="right")
+
+    for s in signals:
+        fmt = lambda v: "-" if v is None else (f"{v:,.4f}" if abs(v) < 1000 else f"{v:,.0f}")
+        table.add_row(
+            f"[{SEVERITY_STYLE[s.severity]}]{s.severity}[/{SEVERITY_STYLE[s.severity]}]",
+            s.model_name, s.column_name, s.metric,
+            fmt(s.baseline), fmt(s.current),
+            "changed" if s.metric in ("min_value", "max_value") else f"{s.change:.1%}",
+        )
+
+    console.print(table)
+    con.close()
 
 if __name__ == "__main__":
     app()

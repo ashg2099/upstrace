@@ -3,6 +3,7 @@ from pathlib import Path
 # config.py -> upstrace/ -> src/ -> project root
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
+DATA_DIR = PROJECT_ROOT / "data"
 WAREHOUSE_DB = PROJECT_ROOT / "warehouse" / "upstrace.duckdb"
 DBT_PROJECT_DIR = PROJECT_ROOT / "transform"
 MANIFEST_PATH = DBT_PROJECT_DIR / "target" / "manifest.json"
