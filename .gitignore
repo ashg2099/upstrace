@@ -5,3 +5,9 @@ data/
 warehouse/
 .env
 .DS_Store
+transform/target/
+transform/dbt_packages/
+transform/logs/
+*.egg-info/
+build/
+dist/

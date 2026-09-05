@@ -1,0 +1,26 @@
+version: 2
+
+models:
+  - name: stg_trips
+    description: Renamed and typed trip records. Still contains every problem raw had.
+    columns:
+      - name: trip_key
+        description: md5 hash of the columns that should identify a trip.
+        data_tests:
+          - not_null
+          - unique
+      - name: vendor_id
+        data_tests:
+          - not_null
+      - name: pickup_at
+        data_tests:
+          - not_null
+      - name: dropoff_at
+        data_tests:
+          - not_null
+      - name: payment_type_id
+        description: TLC data dictionary documents 1-6.
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [1, 2, 3, 4, 5, 6]

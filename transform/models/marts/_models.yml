@@ -1,0 +1,30 @@
+version: 2
+
+models:
+  - name: fct_trips
+    description: One row per trip, with quality flags attached instead of rows removed.
+    columns:
+      - name: trip_key
+        data_tests:
+          - not_null
+      - name: is_clean
+        data_tests:
+          - not_null
+
+  - name: agg_daily_revenue
+    description: Daily revenue per pickup zone, clean trips only.
+    columns:
+      - name: pickup_date
+        data_tests:
+          - not_null
+      - name: trips
+        data_tests:
+          - not_null
+
+  - name: agg_daily_quality
+    description: Daily counts per quality flag. The metric history drift detection will read.
+    columns:
+      - name: pickup_date
+        data_tests:
+          - not_null
+          - unique

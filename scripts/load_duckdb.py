@@ -14,7 +14,7 @@ import duckdb
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = PROJECT_ROOT / "data"
 WAREHOUSE_DIR = PROJECT_ROOT / "warehouse"
-DB_PATH = WAREHOUSE_DIR / "sentinel.duckdb"
+DB_PATH = WAREHOUSE_DIR / "upstrace.duckdb"
 
 
 def main() -> None:
