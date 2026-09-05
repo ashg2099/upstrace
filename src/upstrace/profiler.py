@@ -4,7 +4,7 @@ from datetime import datetime
 import duckdb
 
 from .config import METRICS_SCHEMA
-from .manifest import Model, list_models
+from .manifest import Model, list_nodes
 from .warehouse import ensure_metrics_tables
 
 NUMERIC_TYPES = {
@@ -74,7 +74,7 @@ def run_profile(
     """Har model profile karo aur results append karo. run_id return karta hai."""
     ensure_metrics_tables(con)
 
-    models = list_models()
+    models = list_nodes()
     if only_model:
         models = [m for m in models if m.name == only_model]
         if not models:

@@ -4,6 +4,7 @@ from rich.table import Table
 
 from . import drift as drift_mod
 from . import faults as faults_mod
+from . import rca as rca_mod
 from .config import METRICS_SCHEMA
 from .manifest import list_models
 from .profiler import run_profile
@@ -161,6 +162,45 @@ def drift() -> None:
         )
 
     console.print(table)
+    con.close()
+    
+@app.command()
+def rca() -> None:
+    """Turn the drift signals from the latest run into root causes."""
+    con = connect()
+    incidents = rca_mod.analyse(con)
+
+    if not incidents:
+        console.print("No drift signals to explain. Run: upstrace drift")
+        con.close()
+        return
+
+    for i, inc in enumerate(incidents, 1):
+        kind = "source" if inc.is_source else "model"
+        style = SEVERITY_STYLE[inc.severity]
+
+        console.print(
+            f"\n[{style}]INCIDENT {i} - {inc.severity.upper()}[/{style}]  "
+            f"root: [bold]{inc.root}[/bold] ({kind})"
+        )
+        console.print(f"  columns affected : {', '.join(inc.columns)}")
+        console.print(
+            f"  also drifted     : {', '.join(inc.blast_radius) or 'nothing downstream'}"
+        )
+        console.print("  evidence:")
+        for e in inc.evidence:
+            if e.metric in ("min_value", "max_value"):
+                console.print(f"    - {e.column_name}.{e.metric} changed")
+            else:
+                console.print(
+                    f"    - {e.column_name}.{e.metric}: "
+                    f"{e.baseline:,.4f} -> {e.current:,.4f} ({e.change:.1%})"
+                )
+
+    console.print(
+        f"\n{len(incidents)} root cause(s) explain "
+        f"{sum(1 + len(i.blast_radius) for i in incidents)} affected node(s)."
+    )
     con.close()
 
 if __name__ == "__main__":

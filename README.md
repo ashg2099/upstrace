@@ -18,8 +18,6 @@ $ dbt run    →  Completed successfully.  PASS=4  ERROR=0
 
 $ dbt test   →  PASS=11  ERROR=2   (the same two failures as before the fault)
 
-
-
 dbt is entirely satisfied. Meanwhile:
 
 | month   | trips   | avg distance | revenue per mile |

@@ -9,8 +9,9 @@ class Model:
     unique_id: str          # e.g. model.upstrace.fct_trips
     name: str               # e.g. fct_trips
     relation: str           # e.g. "upstrace"."main"."fct_trips"  (query this)
-    materialized: str       # view / table
+    materialized: str       # view / table / source
     depends_on: list[str] = field(default_factory=list)   # upstream unique_ids
+    is_source: bool = False
 
     @property
     def parents(self) -> list[str]:
@@ -48,9 +49,36 @@ def list_models(manifest: dict | None = None) -> list[Model]:
     return sorted(models, key=lambda m: m.name)
 
 
-def build_lineage(manifest: dict | None = None) -> dict[str, list[str]]:
-    """model name -> upstream node names ki list.
+def list_sources(manifest: dict | None = None) -> list[Model]:
+    """Sources are where the graph starts. Profile them too, or the root cause
+    always looks like the first model instead of the data that arrived."""
+    manifest = manifest or load_manifest()
+    sources = []
 
-    Ye chhota sa dict hi wo graph ka beej hai jispe RCA agent chalega.
+    for unique_id, node in manifest.get("sources", {}).items():
+        sources.append(
+            Model(
+                unique_id=unique_id,
+                name=node["name"],
+                relation=node["relation_name"],
+                materialized="source",
+                depends_on=[],
+                is_source=True,
+            )
+        )
+
+    return sorted(sources, key=lambda m: m.name)
+
+
+def list_nodes(manifest: dict | None = None) -> list[Model]:
+    """Sources and models together - everything Upstrace can profile."""
+    manifest = manifest or load_manifest()
+    return list_sources(manifest) + list_models(manifest)
+
+
+def build_lineage(manifest: dict | None = None) -> dict[str, list[str]]:
+    """node name -> list of upstream node names.
+
+    This dict is the graph the root-cause search walks.
     """
-    return {m.name: m.parents for m in list_models(manifest)}
+    return {m.name: m.parents for m in list_nodes(manifest)}
