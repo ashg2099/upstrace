@@ -1,0 +1,7 @@
+upstrace:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: ../warehouse/upstrace.duckdb
+      threads: 4

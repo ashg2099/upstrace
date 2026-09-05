@@ -1,0 +1,9 @@
+version: 2
+
+sources:
+  - name: nyc_taxi
+    description: Raw NYC TLC yellow taxi trip records, loaded untouched from parquet.
+    schema: raw
+    tables:
+      - name: yellow_trips
+        description: One row per taxi trip, exactly as the TLC published it.
