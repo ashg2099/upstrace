@@ -1,0 +1,31 @@
+{
+  "model": "qwen/qwen3.8-27b",
+  "prompt": "You are a data reliability engineer. A monitoring tool detected drift in a dbt\nwarehouse and traced it to a root node. Explain what most likely happened.\n\nROOT NODE\n  yellow_trips (source table)\n  columns with drift: trip_distance\n\nEVIDENCE AT THE ROOT\n  trip_distance.mean_value: 4.0423 -> 5.0744  (25.5% change, severity critical, ratio x1.2553)\n\nLINEAGE (node <- its upstream dependencies)\n  yellow_trips <- (source)\n  agg_daily_revenue <- fct_trips\n  fct_trips <- stg_trips\n  stg_trips <- yellow_trips\n\nDOWNSTREAM NODES THAT ALSO DRIFTED\n  agg_daily_revenue, fct_trips, stg_trips\n\nRULES\n- You have not seen any rows. Reason only from the names and numbers above.\n- Column names carry meaning. A name that contradicts the values is a finding.\n- Ratios matter. A mean multiplied by a familiar constant suggests a unit change.\n- Metrics are computed over the whole table. If a change affected only part of\n  the data, the blended ratio understates it, so a ratio below a familiar\n  constant does not rule that constant out.\n- If the evidence is thin, say low confidence. Do not invent detail.\n- Never claim to know who deployed what; you have no commit history.\n\nReply with JSON only, matching this shape:\n{\n  \"summary\": \"one sentence, plain English, what happened\",\n  \"likely_causes\": [\n    {\n      \"cause\": \"specific and testable\",\n      \"confidence\": \"high | medium | low\",\n      \"reasoning\": \"why this fits the evidence\"\n    }\n  ],\n  \"checks_to_add\": [\n    \"a dbt test or SQL assertion that would catch this next time\"\n  ],\n  \"who_is_affected\": \"which downstream consumers see wrong numbers, and how\"\n}\n",
+  "provider": "groq",
+  "response": {
+    "checks_to_add": [
+      "dbt test: assert that trip_distance is within a reasonable range (e.g., between 0 and 100 miles/km) to catch outliers.",
+      "dbt test: assert that the mean of trip_distance is within a historical tolerance band (e.g., 5% deviation from the 30-day rolling average).",
+      "SQL assertion: Check for duplicate or anomalous trip_distance values that are significantly higher than the median."
+    ],
+    "likely_causes": [
+      {
+        "cause": "A subset of records changed units (e.g., some trips recorded in kilometers while others in miles), or a new data source with different units was merged.",
+        "confidence": "medium",
+        "reasoning": "A full unit conversion from miles to kilometers would result in a ~1.6x increase (60% change). The observed 1.255x increase (25.5%) is lower, which aligns with the rule that a blended ratio understates the change if only part of the data is affected. If ~40% of trips were in km and 60% in miles, the mean would shift significantly but not by the full 1.6x factor."
+      },
+      {
+        "cause": "Inclusion of erroneous or outlier data (e.g., GPS errors, test data, or invalid long-distance trips) that skews the mean upward.",
+        "confidence": "medium",
+        "reasoning": "A 25.5% increase in the mean can be caused by a small number of extremely large values (outliers) entering the dataset. This is a common data quality issue in trip data where GPS glitches or invalid entries can create unrealistic distances."
+      },
+      {
+        "cause": "A change in the definition or calculation of trip_distance in the source system (e.g., switching from straight-line distance to road distance, or including waiting time as distance).",
+        "confidence": "low",
+        "reasoning": "While possible, this would require a specific business logic change in the source system. The name 'trip_distance' implies a standard metric, so a change in definition is less likely than a data quality or unit issue, but cannot be ruled out without more context."
+      }
+    ],
+    "summary": "The mean trip_distance increased by 25.5%, which is inconsistent with a standard unit conversion (e.g., miles to kilometers would be ~60%) but suggests a data quality issue such as the inclusion of outliers, a change in data source logic, or a partial unit change affecting only a subset of records.",
+    "who_is_affected": "All downstream nodes (stg_trips, fct_trips, agg_daily_revenue) will have inflated trip_distance values. This will lead to incorrect calculations for any metrics derived from trip_distance, such as average trip length, revenue per mile, or distance-based pricing. agg_daily_revenue may be particularly affected if it uses trip_distance to calculate revenue or efficiency metrics."
+  }
+}

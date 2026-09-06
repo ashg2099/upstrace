@@ -5,6 +5,7 @@ from rich.table import Table
 from . import drift as drift_mod
 from . import faults as faults_mod
 from . import rca as rca_mod
+from . import explain as explain_mod
 from .config import METRICS_SCHEMA
 from .manifest import list_models
 from .profiler import run_profile
@@ -202,6 +203,49 @@ def rca() -> None:
         f"{sum(1 + len(i.blast_radius) for i in incidents)} affected node(s)."
     )
     con.close()
+    
+@app.command()
+def explain(
+    no_cache: bool = typer.Option(False, "--no-cache", help="Force a fresh model call."),
+) -> None:
+    """Ask a language model what the root-cause incidents actually mean."""
+    con = connect()
+    incidents = rca_mod.analyse(con)
+    con.close()
+
+    if not incidents:
+        console.print("No incidents to explain. Run: upstrace drift")
+        return
+
+    for i, inc in enumerate(incidents, 1):
+        verdict = explain_mod.explain(inc, use_cache=not no_cache)
+
+        console.print(
+            f"\n[bold]INCIDENT {i}[/bold]  root: [bold]{inc.root}[/bold]  "
+            f"({inc.severity})"
+        )
+
+        # markup=False everywhere the model's own words are printed: rich reads
+        # square brackets as style tags, and a model will happily emit them.
+        console.print(f"\n  {verdict.get('summary', '(no summary)')}\n", markup=False)
+
+        console.print("  Likely causes:")
+        for cause in verdict.get("likely_causes", []):
+            console.print(
+                f"    ({cause.get('confidence', '?')}) {cause.get('cause', '')}",
+                markup=False,
+            )
+            if cause.get("reasoning"):
+                console.print(f"        {cause['reasoning']}", markup=False)
+
+        checks = verdict.get("checks_to_add", [])
+        if checks:
+            console.print("\n  Checks worth adding:")
+            for check in checks:
+                console.print(f"    - {check}", markup=False)
+
+        if verdict.get("who_is_affected"):
+            console.print(f"\n  Impact: {verdict['who_is_affected']}", markup=False)
 
 if __name__ == "__main__":
     app()

@@ -22,8 +22,9 @@ class Incident:
     root: str
     is_source: bool
     columns: list[str]
-    blast_radius: list[str]           # downstream nodes jo bhi drift hue
+    blast_radius: list[str]           # downstream nodes that also drifted
     evidence: list[Evidence] = field(default_factory=list)
+    downstream_columns: dict[str, list[str]] = field(default_factory=dict)
 
     @property
     def severity(self) -> str:
@@ -99,6 +100,10 @@ def analyse(con: duckdb.DuckDBPyConnection, run_id: str | None = None) -> list[I
                 is_source=nodes[name].is_source if name in nodes else False,
                 columns=sorted({s.column_name for s in node_signals}),
                 blast_radius=downstream,
+                downstream_columns={
+                    node: sorted({s.column_name for s in signals if s.model_name == node})
+                    for node in downstream
+                },
                 evidence=sorted(
                     node_signals,
                     key=lambda e: {"critical": 0, "high": 1, "warning": 2}[e.severity],

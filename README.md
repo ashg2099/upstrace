@@ -45,3 +45,9 @@ already carry:
   does not document
 - trips dated **2002, 2008 and 2009** inside files named `2024-01`, `2024-02`, `2024-03`
 - one trip recorded **twice**, byte-identical, in 9.5M rows
+
+## Model Availability on Groq
+
+Model names on free tiers change often. If `upstrace explain` returns a 404,
+list what your key can reach and set `UPSTRACE_LLM_MODEL` accordingly.
+Cached responses in `cache/llm/` keep working regardless — they outlive the model.

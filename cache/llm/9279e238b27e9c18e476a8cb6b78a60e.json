@@ -1,0 +1,26 @@
+{
+  "model": "qwen/qwen3.8-27b",
+  "prompt": "You are a data reliability engineer. A monitoring tool detected drift in a dbt\nwarehouse and traced it to a root node. Explain what most likely happened.\n\nROOT NODE\n  yellow_trips (source table)\n  columns with drift: trip_distance\n\nEVIDENCE AT THE ROOT\n  trip_distance.mean_value: 4.0423 -> 5.0744  (25.5% change, severity critical, ratio x1.2553)\n\nLINEAGE (node <- its upstream dependencies)\n  yellow_trips <- (source)\n  agg_daily_revenue <- fct_trips\n  fct_trips <- stg_trips\n  stg_trips <- yellow_trips\n\nDOWNSTREAM NODES THAT ALSO DRIFTED (node: the columns that drifted there)\n  agg_daily_revenue: avg_distance_miles, revenue\n  fct_trips: trip_distance_miles\n  stg_trips: trip_distance_miles\n\nRULES\n- You have not seen any rows. Reason only from the names and numbers above.\n- Column names carry meaning. A name that contradicts the values is a finding.\n- Ratios matter. A mean multiplied by a familiar constant suggests a unit change.\n- Downstream column names are renamed versions of the root column. If a downstream name states a unit and the values no longer fit it, say so\n  explicitly and name both units.\n- Metrics are computed over the whole table. If a change affected only part of\n  the data, the blended ratio understates it, so a ratio below a familiar\n  constant does not rule that constant out.\n- If the evidence is thin, say low confidence. Do not invent detail.\n- Never claim to know who deployed what; you have no commit history.\n\nReply with JSON only, matching this shape:\n{\n  \"summary\": \"one sentence, plain English, what happened\",\n  \"likely_causes\": [\n    {\n      \"cause\": \"specific and testable\",\n      \"confidence\": \"high | medium | low\",\n      \"reasoning\": \"why this fits the evidence\"\n    }\n  ],\n  \"checks_to_add\": [\n    \"a dbt test or SQL assertion that would catch this next time\"\n  ],\n  \"who_is_affected\": \"which downstream consumers see wrong numbers, and how\"\n}\n",
+  "provider": "groq",
+  "response": {
+    "checks_to_add": [
+      "dbt test: assert that trip_distance is within a plausible range for city taxi trips (e.g., between 0.1 and 50 miles) to catch unit mismatches.",
+      "dbt test: compare the current mean of trip_distance against a historical baseline with a tolerance of <5% to detect gradual or sudden unit shifts.",
+      "SQL assertion: Check for values that are implausibly large for a single trip (e.g., > 100) which would indicate a unit error if the expected unit is miles."
+    ],
+    "likely_causes": [
+      {
+        "cause": "The upstream source system changed the unit of measurement for trip_distance from miles to kilometers.",
+        "confidence": "high",
+        "reasoning": "The observed ratio is 1.2553. While this is not exactly 1.609 (the miles-to-km conversion factor), the rule states that if a change affected only part of the data, the blended ratio understates the true constant. A partial migration or a mix of old (miles) and new (km) records would result in a mean shift less than 1.609 but greater than 1.0. The downstream column is named 'trip_distance_miles', which explicitly contradicts the new magnitude if the values are now in kilometers. The 25.5% increase is consistent with a unit conversion error where the new unit is larger than the old one."
+      },
+      {
+        "cause": "A data quality issue in the source introduced outliers or incorrect scaling factors for a subset of trips.",
+        "confidence": "low",
+        "reasoning": "While possible, a random outlier event is less likely to produce a consistent, significant shift in the mean across the entire table without other statistical anomalies (like variance spikes) being highlighted. The specific direction and magnitude align more closely with a systematic unit change than random noise."
+      }
+    ],
+    "summary": "The source data for trip_distance likely switched from miles to kilometers, causing a ~1.6x increase in values that propagated through the pipeline.",
+    "who_is_affected": "All downstream consumers of agg_daily_revenue, fct_trips, and stg_trips are affected. Specifically, 'avg_distance_miles' in agg_daily_revenue and 'trip_distance_miles' in fct_trips/stg_trips are now reporting values that are approximately 25.5% higher than they should be if the unit is still miles. If these columns are used for revenue calculations (as suggested by 'revenue' also drifting), the financial metrics are likely overestimated or distorted because the distance component is inflated."
+  }
+}
