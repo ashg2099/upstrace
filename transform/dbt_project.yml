@@ -2,6 +2,9 @@ name: 'upstrace'
 version: '1.0.0'
 profile: 'upstrace'
 
+flags:
+  send_anonymous_usage_stats: false
+
 model-paths: ["models"]
 test-paths: ["tests"]
 target-path: "target"

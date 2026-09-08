@@ -22,6 +22,7 @@ class Signal:
     current: float | None
     change: float
     severity: str
+    partitions: int = 0  
 
 
 def ensure_drift_table(con: duckdb.DuckDBPyConnection) -> None:
@@ -38,6 +39,11 @@ def ensure_drift_table(con: duckdb.DuckDBPyConnection) -> None:
             change           DOUBLE,
             severity         VARCHAR
         )
+    """)
+    # Added after the first release; existing warehouses migrate in place.
+    con.execute(f"""
+        ALTER TABLE {METRICS_SCHEMA}.drift_signals
+        ADD COLUMN IF NOT EXISTS partitions INTEGER
     """)
 
 
@@ -64,6 +70,69 @@ def _severity(metric: str, change: float) -> str:
         return "high"
     return "warning"
 
+def partition_signals(
+    con: duckdb.DuckDBPyConnection,
+    run_id: str,
+    baseline_run_id: str,
+) -> list[Signal]:
+    """Compare each day against the same day in the baseline run.
+
+    This is what a whole-table average cannot do. A fault confined to one day
+    barely moves a 500,000-row mean, but it moves that day's mean hard.
+
+    Note on what this measures: both runs profile the same seeded sample, so a
+    day nobody touched is byte-identical and produces no signal by construction.
+    Against live data you would compare each partition to its own history rather
+    than to the same partition in a previous run.
+    """
+    rows = con.execute(
+        f"""
+        select
+            b.model_name, b.column_name, b.partition_value,
+            b.row_count, c.row_count,
+            b.null_rate, c.null_rate,
+            b.distinct_count, c.distinct_count,
+            b.mean_value, c.mean_value
+        from {METRICS_SCHEMA}.partition_profiles b
+        join {METRICS_SCHEMA}.partition_profiles c
+          on  b.model_name = c.model_name
+         and  b.column_name = c.column_name
+         and  b.partition_value = c.partition_value
+        where b.run_id = ? and c.run_id = ?
+        """,
+        [baseline_run_id, run_id],
+    ).fetchall()
+
+    # (model, column, metric) -> [partitions over threshold, worst change,
+    #                             baseline at worst, current at worst]
+    worst: dict[tuple[str, str, str], list] = {}
+
+    for (model, column, _partition,
+         b_rows, c_rows, b_null, c_null,
+         b_dist, c_dist, b_mean, c_mean) in rows:
+
+        checks = [
+            ("row_count", b_rows, c_rows, _relative(b_rows, c_rows)),
+            ("null_rate", b_null, c_null, abs((c_null or 0) - (b_null or 0))),
+            ("distinct_count", b_dist, c_dist, _relative(b_dist, c_dist)),
+        ]
+        if b_mean is not None or c_mean is not None:
+            checks.append(("mean_value", b_mean, c_mean, _relative(b_mean, c_mean)))
+
+        for metric, baseline, current, change in checks:
+            if change < THRESHOLDS[metric]:
+                continue
+            key = (model, column, metric)
+            entry = worst.setdefault(key, [0, 0.0, None, None])
+            entry[0] += 1
+            if change > entry[1]:
+                entry[1:] = [change, baseline, current]
+
+    return [
+        Signal(model, column, metric, baseline, current, change,
+               _severity(metric, change), partitions=count)
+        for (model, column, metric), (count, change, baseline, current) in worst.items()
+    ]
 
 def detect(
     con: duckdb.DuckDBPyConnection,
@@ -135,6 +204,8 @@ def detect(
                     Signal(model, column, metric, None, None, 1.0, "warning")
                 )
 
+    signals += partition_signals(con, run_id, baseline_run_id)
+    
     order = {"critical": 0, "high": 1, "warning": 2}
     signals.sort(key=lambda s: (order[s.severity], -s.change))
 
@@ -142,9 +213,11 @@ def detect(
     for s in signals:
         con.execute(
             f"""INSERT INTO {METRICS_SCHEMA}.drift_signals
-                VALUES (now(), ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (detected_at, run_id, baseline_run_id, model_name, column_name,
+                 metric, baseline_value, current_value, change, severity, partitions)
+                VALUES (now(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [run_id, baseline_run_id, s.model_name, s.column_name, s.metric,
-             s.baseline, s.current, s.change, s.severity],
+             s.baseline, s.current, s.change, s.severity, s.partitions],
         )
 
     return signals

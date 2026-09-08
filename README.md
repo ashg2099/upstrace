@@ -1,4 +1,3 @@
-
 # Upstrace
 
 Trace a failed data quality check upstream to the change that caused it.
@@ -48,6 +47,28 @@ already carry:
 
 ## Model Availability on Groq
 
-Model names on free tiers change often. If `upstrace explain` returns a 404,
-list what your key can reach and set `UPSTRACE_LLM_MODEL` accordingly.
-Cached responses in `cache/llm/` keep working regardless — they outlive the model.
+Model names on free tiers change often. If `upstrace explain` returns a 404, list what your key can reach and set `UPSTRACE_LLM_MODEL` accordingly. Cached responses in `cache/llm/` keep working regardless — they outlive the model.
+
+## How well does it work
+
+56 seeded defects — varied across magnitude (1.03x to 1.6x), time window (one day
+to one month), and pipeline layer (source vs transformation) — plus 4 negative
+controls where nothing was broken and silence is the correct answer. Run against
+a repeatable 500,000-row sample.
+
+| metric            | result       |
+| ----------------- | ------------ |
+| drift detected    | 56/56 (100%) |
+| correct root node | 55/56 (98%)  |
+| false positives   | 0/4 controls |
+
+The one failure is `fare-inflation-small-day`: a 3% change to one column on one
+day out of ninety. It is the smallest fault in the narrowest window in the suite,
+and it is where the thresholds are set to stop.
+
+Faults introduced in a transformation rather than the source: 5/5. The analysis
+named `fct_trips`, not the source table.
+
+Reproduce with `upstrace eval`. Full breakdown: [docs/eval-results.md](docs/eval-results.md)
+
+Reproduce with `upstrace eval`.

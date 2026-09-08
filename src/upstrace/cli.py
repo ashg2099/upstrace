@@ -6,6 +6,7 @@ from . import drift as drift_mod
 from . import faults as faults_mod
 from . import rca as rca_mod
 from . import explain as explain_mod
+from . import evaluate as evaluate_mod
 from .config import METRICS_SCHEMA
 from .manifest import list_models
 from .profiler import run_profile
@@ -246,6 +247,47 @@ def explain(
 
         if verdict.get("who_is_affected"):
             console.print(f"\n  Impact: {verdict['who_is_affected']}", markup=False)
+
+@app.command()
+def eval(
+    sample: int = typer.Option(500_000, "--sample", help="Rows to sample per run."),
+    limit: int = typer.Option(None, "--limit", help="Run only the first N scenarios."),
+    report: str = typer.Option("docs/eval-results.md", "--report", help="Where to write the report."),
+) -> None:
+    """Inject every seeded defect in turn and score the root-cause analysis."""
+    from pathlib import Path
+
+    from .config import PROJECT_ROOT
+
+    console.print(
+        f"Building a clean {sample:,}-row baseline. Each scenario resets to it.\n"
+    )
+
+    def show(r):
+        mark = "[green]pass[/green]" if r.passed else "[red]FAIL[/red]"
+        console.print(
+            f"  {mark}  {r.scenario.id:<34} "
+            f"root={r.predicted_root or '-':<14} {r.n_signals:>3} signals  {r.seconds}s"
+        )
+
+    results = evaluate_mod.run_all(sample=sample, limit=limit, on_result=show)
+    summary = evaluate_mod.summarise(results)
+
+    table = Table(title="Fault injection results")
+    table.add_column("metric")
+    table.add_column("result", justify="right")
+    table.add_row("drift detected", f"{summary['detected']}/{summary['total']}")
+    table.add_row("correct root node", f"{summary['root_correct']}/{summary['total']}")
+    table.add_row("correct column", f"{summary['column_correct']}/{summary['total']}")
+    table.add_row("fully correct", f"{summary['passed']}/{summary['total']}"
+                                   f"  ({summary['pass_rate']:.0%})")
+    console.print()
+    console.print(table)
+
+    path = Path(PROJECT_ROOT / report)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(evaluate_mod.to_markdown(results, sample))
+    console.print(f"\nReport written to {report}")
 
 if __name__ == "__main__":
     app()

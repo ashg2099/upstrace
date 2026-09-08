@@ -46,3 +46,20 @@ def ensure_metrics_tables(con: duckdb.DuckDBPyConnection) -> None:
             mean_value      DOUBLE
         )
     """)
+    
+    con.execute(f"""
+        CREATE TABLE IF NOT EXISTS {METRICS_SCHEMA}.partition_profiles (
+            run_id          VARCHAR,
+            profiled_at     TIMESTAMP,
+            model_name      VARCHAR,
+            partition_value DATE,
+            column_name     VARCHAR,
+            row_count       BIGINT,
+            null_count      BIGINT,
+            null_rate       DOUBLE,
+            distinct_count  BIGINT,
+            min_value       VARCHAR,
+            max_value       VARCHAR,
+            mean_value      DOUBLE
+        )
+    """)

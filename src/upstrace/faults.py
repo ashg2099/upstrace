@@ -68,11 +68,19 @@ def inject(con: duckdb.DuckDBPyConnection, key: str, since: str) -> int:
     return before - after if before != after else before
 
 
-def reset(con: duckdb.DuckDBPyConnection) -> int:
-    """Raw table ko parquet se dobara load karo. Har fault undo ho jaata hai."""
+def reset(con: duckdb.DuckDBPyConnection, sample: int | None = None, seed: int = 42) -> int:
+    """Reload the raw table straight from the parquet files. Undoes every fault.
+
+    `sample` takes a repeatable subset instead of the full data. The evaluation
+    harness uses it so one scenario takes seconds rather than minutes - an eval
+    you will not sit through is an eval you will not run. The sample is seeded,
+    so every scenario starts from byte-identical data.
+    """
     pattern = str(DATA_DIR / "yellow_tripdata_*.parquet")
+    select = f"SELECT * FROM read_parquet('{pattern}')"
+    if sample:
+        select += f" USING SAMPLE reservoir({sample} ROWS) REPEATABLE ({seed})"
+
     con.execute(f"DROP TABLE IF EXISTS {RAW_TABLE}")
-    con.execute(
-        f"CREATE TABLE {RAW_TABLE} AS SELECT * FROM read_parquet('{pattern}')"
-    )
+    con.execute(f"CREATE TABLE {RAW_TABLE} AS {select}")
     return con.execute(f"select count(*) from {RAW_TABLE}").fetchone()[0]
