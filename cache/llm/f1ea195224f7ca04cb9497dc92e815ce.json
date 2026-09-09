@@ -1,0 +1,25 @@
+{
+  "model": "qwen/qwen3.8-27b",
+  "prompt": "You are a data reliability engineer. A monitoring tool detected drift in a dbt\nwarehouse and traced it to a root node. Explain what most likely happened.\n\nROOT NODE\n  yellow_trips (source table)\n  columns with drift: trip_distance\n\nEVIDENCE AT THE ROOT\n  trip_distance.mean_value: 3.2496 -> 5.2298  (60.9% change, severity critical, ratio x1.6094)\n  trip_distance.mean_value: 4.6339 -> 5.7401  (23.9% change, severity high, ratio x1.2387)\n  trip_distance.distinct_count: 3,214.0000 -> 3,906.0000  (21.5% change, severity high, ratio x1.2153)\n\nLINEAGE (node <- its upstream dependencies)\n  yellow_trips <- (source)\n  agg_daily_revenue <- fct_trips\n  fct_trips <- stg_trips\n  stg_trips <- yellow_trips\n\nDOWNSTREAM NODES THAT ALSO DRIFTED (node: the columns that drifted there)\n  agg_daily_revenue: avg_distance_miles\n  fct_trips: trip_distance_miles\n  stg_trips: trip_distance_miles\n\nRULES\n- You have not seen any rows. Reason only from the names and numbers above.\n- Column names carry meaning. A name that contradicts the values is a finding.\n- Ratios matter. A mean multiplied by a familiar constant suggests a unit change.\n- Downstream column names are renamed versions of the root column. If a downstream name states a unit and the values no longer fit it, say so\n  explicitly and name both units.\n- Metrics are computed over the whole table. If a change affected only part of\n  the data, the blended ratio understates it, so a ratio below a familiar\n  constant does not rule that constant out.\n- If the evidence is thin, say low confidence. Do not invent detail.\n- Never claim to know who deployed what; you have no commit history.\n\nReply with JSON only, matching this shape:\n{\n  \"summary\": \"one sentence, plain English, what happened\",\n  \"likely_causes\": [\n    {\n      \"cause\": \"specific and testable\",\n      \"confidence\": \"high | medium | low\",\n      \"reasoning\": \"why this fits the evidence\"\n    }\n  ],\n  \"checks_to_add\": [\n    \"a dbt test or SQL assertion that would catch this next time\"\n  ],\n  \"who_is_affected\": \"which downstream consumers see wrong numbers, and how\"\n}\n",
+  "provider": "groq",
+  "response": {
+    "checks_to_add": [
+      "dbt test: assert that trip_distance is within a plausible range for miles (e.g., between 0 and 100) to catch unit conversions that result in unexpectedly large values.",
+      "dbt test: assert that the mean of trip_distance is stable within a 10% tolerance of the historical baseline to detect sudden shifts in distribution."
+    ],
+    "likely_causes": [
+      {
+        "cause": "The upstream source system changed the unit of measurement for trip_distance from miles to kilometers.",
+        "confidence": "high",
+        "reasoning": "The mean value increased by a factor of approximately 1.61 (3.25 to 5.23). The conversion factor from miles to kilometers is 1.60934. This ratio is too close to be coincidental. Additionally, the downstream column is named 'trip_distance_miles', which explicitly claims the unit is miles. If the values are now in kilometers, the name contradicts the data, confirming a unit mismatch."
+      },
+      {
+        "cause": "A data quality issue introduced duplicate or outlier records that skewed the mean upward.",
+        "confidence": "low",
+        "reasoning": "While the distinct count increased by 21.5%, this is a much smaller change than the 60.9% increase in the mean. A simple increase in row count or distinct values would not typically cause the mean to jump by a factor of 1.6 unless the new data was systematically larger, which points back to a unit change rather than random noise or duplication."
+      }
+    ],
+    "summary": "The source data for trip_distance likely switched from miles to kilometers, causing a ~1.6x increase in values that propagated through the pipeline.",
+    "who_is_affected": "All downstream consumers of agg_daily_revenue, fct_trips, and stg_trips are seeing trip_distance values that are ~60% higher than expected. Specifically, avg_distance_miles in agg_daily_revenue and trip_distance_miles in fct_trips/stg_trips are mislabeled; they contain kilometer values but are reported as miles, leading to overestimated distances and any metrics derived from them (e.g., speed, fuel consumption estimates)."
+  }
+}

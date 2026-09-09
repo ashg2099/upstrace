@@ -11,3 +11,5 @@ transform/logs/
 *.egg-info/
 build/
 dist/
+app/node_modules/
+app/static/

@@ -9,6 +9,9 @@ dependencies = [
     "rich>=13.0",
     "python-dotenv>=1.0",
     "pandas>=2.0",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "pyyaml",
 ]
 
 [project.scripts]
