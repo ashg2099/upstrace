@@ -1,3 +1,13 @@
+
+---
+title: Upstrace
+emoji: 🛰️
+colorFrom: indigo
+colorTo: purple
+sdk: docker
+app_port: 7860
+pinned: false
+---
 # Upstrace
 
 Trace a failed data quality check upstream to the change that caused it.
