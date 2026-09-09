@@ -263,7 +263,7 @@ upstrace fault reset
 
 The LLM sees the evidence table and the lineage. It never sees a single row.
 
-![1788924477586](image/README/1788924477586.png)
+![The generated explanation](docs/screenshot-chart.png)
 
 > **The source data for trip_distance likely switched from miles to kilometers,
 > causing a ~1.6x increase in values that propagated through the pipeline.**
@@ -293,8 +293,6 @@ The LLM sees the evidence table and the lineage. It never sees a single row.
 
 The column *name* used as evidence, and the explicit rejection of the alternative
 hypothesis, are what make this worth more than a threshold alert.
-
----
 
 ---
 
@@ -876,7 +874,7 @@ Dockerfile           two targets: runtime (tool only), demo (tool + data)
 `transform/`, `faults.py` and `scenarios.py` are the demo pipeline and the
 evaluation fixture. The engine never references them.
 
-## Data
+## Datac
 
 [NYC TLC yellow taxi trip records](https://www.nyc.gov/site/tlc/about/tlc-trip-record-data.page),
 January–March 2024 — 9.5M rows. A 400,000-row reservoir sample spanning 91 days
