@@ -7,6 +7,7 @@ import pandas as pd
 from .config import METRICS_SCHEMA
 from .manifest import Model, list_nodes
 from .warehouse import ensure_metrics_tables
+from .settings import get_settings
 
 NUMERIC_TYPES = {
     "TINYINT", "SMALLINT", "INTEGER", "BIGINT", "HUGEINT",
@@ -89,20 +90,42 @@ PARTITION_COLUMNS = [
 ]
 
 
-def partition_column(con: duckdb.DuckDBPyConnection, relation: str) -> str | None:
-    """Pick the column to slice by. A real DATE beats a TIMESTAMP; first wins.
+def partition_column(
+    con: duckdb.DuckDBPyConnection,
+    relation: str,
+    node: str | None = None,
+) -> str | None:
+    """Pick the column to slice by.
 
-    Auto-detecting this is what lets the tool point at any dbt project instead of
-    only this one. When a table has no date-like column, it simply is not
-    partitioned and only whole-table profiling applies.
+    Configuration wins over detection. upstrace.yml can name the column
+    explicitly, or set it to null to opt a node out of per-day profiling
+    entirely. Only when a node is not mentioned there do we fall back to the
+    heuristic: a real DATE beats a TIMESTAMP, first wins.
+
+    The heuristic is right often enough to be the default and wrong often enough
+    to need an override. A table whose first date column is `customer_signup_date`
+    would otherwise be profiled along entirely the wrong axis, and silently so -
+    every day would look stable because the axis itself is meaningless.
     """
+    if node is not None:
+        mode, configured = get_settings().partition_override(node)
+        if mode == "off":
+            return None
+        if mode == "fixed":
+            names = {name for name, *_ in con.execute(f"DESCRIBE {relation}").fetchall()}
+            if configured not in names:
+                raise SystemExit(
+                    f"upstrace.yml sets profile.partition_column for {node!r} to "
+                    f"{configured!r}, which does not exist in {relation}."
+                )
+            return configured
+
     columns = con.execute(f"DESCRIBE {relation}").fetchall()
     dates = [name for name, dtype, *_ in columns if dtype.upper() == "DATE"]
     if dates:
         return dates[0]
     stamps = [name for name, dtype, *_ in columns if dtype.upper() in DATE_LIKE]
     return stamps[0] if stamps else None
-
 
 def profile_partitions(
     con: duckdb.DuckDBPyConnection,
@@ -114,18 +137,31 @@ def profile_partitions(
     absorb one bad day. Per-day profiles measure that day against its own
     history instead, which is the difference between noticing and not.
     """
-    part_col = partition_column(con, model.relation)
+    settings = get_settings()
+
+    part_col = partition_column(con, model.relation, model.name)
     if part_col is None:
+        return []
+
+    part = f'cast("{part_col}" as date)'
+
+    # Guard rail. A column that is date-like but effectively unique - an event
+    # timestamp spanning ten years, an id that happened to parse as a date -
+    # would write one profile row per partition per column and turn a two-second
+    # run into a very long one. Better to skip per-day profiling loudly in
+    # config than to discover it as a hang.
+    partitions = con.execute(
+        f"select count(distinct {part}) from {model.relation} where {part} is not null"
+    ).fetchone()[0]
+    if partitions > settings.max_partitions:
         return []
 
     rows: list[tuple] = []
     columns = con.execute(f"DESCRIBE {model.relation}").fetchall()
-    part = f'cast("{part_col}" as date)'
 
     for name, dtype, *_ in columns:
         col = f'"{name}"'
         mean_expr = f"avg({col})::double" if _is_numeric(dtype) else "cast(null as double)"
-
         for p, total, non_null, distinct, min_v, max_v, mean_v in con.execute(f"""
             select
                 {part}                            as partition_value,
@@ -145,7 +181,6 @@ def profile_partitions(
                 (null_count / total) if total else 0.0,
                 distinct, min_v, max_v, mean_v,
             ))
-
     return rows
 
 def profile_model(con: duckdb.DuckDBPyConnection, model: Model) -> list[dict]:
@@ -166,11 +201,19 @@ def run_profile(
     """Har model profile karo aur results append karo. run_id return karta hai."""
     ensure_metrics_tables(con)
 
+    settings = get_settings()
     models = list_nodes()
     if only_model:
+        # An explicit --model beats the config: if you named it, you meant it.
         models = [m for m in models if m.name == only_model]
         if not models:
             raise SystemExit(f"No model named {only_model!r} in the manifest.")
+    else:
+        models = [m for m in models if settings.matches(m.name)]
+        if not models:
+            raise SystemExit(
+                "No nodes matched profile.include / profile.exclude in upstrace.yml."
+            )
 
     run_id = uuid.uuid4().hex[:12]
     started_at = datetime.now()

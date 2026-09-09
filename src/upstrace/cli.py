@@ -288,6 +288,38 @@ def eval(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(evaluate_mod.to_markdown(results, sample))
     console.print(f"\nReport written to {report}")
+    
+@app.command()
+def init(
+    force: bool = typer.Option(False, "--force", help="Overwrite an existing upstrace.yml"),
+) -> None:
+    """Write a starter upstrace.yml in the current directory."""
+    from upstrace.settings import CONFIG_FILENAME, STARTER_YAML
+
+    target = Path.cwd() / CONFIG_FILENAME
+    if target.exists() and not force:
+        console.print(f"[yellow]{CONFIG_FILENAME} already exists.[/] Use --force to overwrite.")
+        raise typer.Exit(1)
+
+    target.write_text(STARTER_YAML)
+    console.print(f"[green]Wrote {target}[/]")
+    console.print("Edit [bold]warehouse[/] and [bold]dbt_project_dir[/], then run [bold]upstrace config[/].")
+
+
+@app.command("config")
+def show_config() -> None:
+    """Show the resolved configuration and where it came from."""
+    from rich.table import Table
+
+    from upstrace.settings import get_settings
+
+    settings = get_settings(reload=True)
+    table = Table(show_header=False, box=None, pad_edge=False)
+    table.add_column(style="dim", no_wrap=True)
+    table.add_column()
+    for key, value in settings.describe().items():
+        table.add_row(key, value)
+    console.print(table)
 
 if __name__ == "__main__":
     app()

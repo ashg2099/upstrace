@@ -1,18 +1,26 @@
+"""Paths and constants, now derived from settings rather than hardcoded.
+
+This module used to be where the NYC-taxi-shaped assumptions lived. It is kept
+as a thin façade so every existing `from upstrace import config` import keeps
+working, but the values now come from upstrace.yml.
+"""
+
 from pathlib import Path
 
 from dotenv import load_dotenv
 
-# config.py -> upstrace/ -> src/ -> project root
+from upstrace.settings import get_settings
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-# Read .env into the environment before anything asks for a key.
-# override=False so a real shell variable always beats the file.
+# .env is for secrets (API keys). upstrace.yml is for configuration.
+# Keeping them separate is why upstrace.yml is safe to commit.
 load_dotenv(PROJECT_ROOT / ".env", override=False)
 
-DATA_DIR = PROJECT_ROOT / "data"
-WAREHOUSE_DB = PROJECT_ROOT / "warehouse" / "upstrace.duckdb"
-DBT_PROJECT_DIR = PROJECT_ROOT / "transform"
-MANIFEST_PATH = DBT_PROJECT_DIR / "target" / "manifest.json"
+SETTINGS = get_settings()
 
-# Upstrace apne metrics apne schema mein likhta hai, tumhare data ke saath kabhi mix nahi karta.
-METRICS_SCHEMA = "upstrace_meta"
+DATA_DIR = SETTINGS.data_dir
+WAREHOUSE_DB = SETTINGS.warehouse
+DBT_PROJECT_DIR = SETTINGS.dbt_project_dir
+MANIFEST_PATH = DBT_PROJECT_DIR / "target" / "manifest.json"
+METRICS_SCHEMA = SETTINGS.metrics_schema

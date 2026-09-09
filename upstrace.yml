@@ -1,0 +1,35 @@
+# Upstrace configuration for the demo project.
+#
+# Everything project-specific lives here. src/upstrace/ never names a table,
+# a column, or a dataset - point this file somewhere else and the engine
+# follows, no code change.
+
+project: upstrace-demo
+
+warehouse: warehouse/upstrace.duckdb
+dbt_project_dir: transform
+data_dir: data
+
+profile:
+  include: ["*"]
+  exclude: []
+
+  # Left empty on purpose: the auto-detected axis (tpep_pickup_datetime, via
+  # the first-TIMESTAMP heuristic) is the correct grain for this pipeline.
+  # A project where it is not would set it here.
+  partition_column: {}
+
+  max_partitions: 400
+
+thresholds:
+  default:
+    row_count: 0.02
+    null_rate: 0.01
+    distinct_count: 0.10
+    mean_value: 0.05
+  overrides: {}
+
+severity:
+  warning: 1.0
+  high: 2.0
+  critical: 5.0

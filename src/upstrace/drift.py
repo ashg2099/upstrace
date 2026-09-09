@@ -1,17 +1,27 @@
 from dataclasses import dataclass
+from functools import lru_cache
 
 import duckdb
 
 from .config import METRICS_SCHEMA
+from .settings import get_settings
 
-# Ek metric kitna hil sakta hai isse pehle ki hum use drift kahein.
-THRESHOLDS = {
-    "row_count":      0.02,   # 2% relative
-    "null_rate":      0.01,   # 1 percentage point, absolute
-    "distinct_count": 0.10,   # 10% relative
-    "mean_value":     0.05,   # 5% relative
-}
 
+@lru_cache(maxsize=None)
+def thresholds_for(node: str) -> dict[str, float]:
+    """How far a metric may move before we call it drift, for this node.
+
+    Thresholds are per-node because a single global number cannot be right:
+    2% row-count movement is alarming in a fact table and ordinary in a
+    marketing events table that swings 40% between a Tuesday and a Saturday.
+    Without per-node overrides the only way to silence those false alarms is to
+    raise the threshold everywhere, which is how alerting systems get ignored.
+
+    Cached because this is called once per metric per column per partition -
+    tens of thousands of times on a ninety-day table. Call
+    thresholds_for.cache_clear() if the config is reloaded mid-process.
+    """
+    return get_settings().thresholds_for(node)
 
 @dataclass
 class Signal:
@@ -62,11 +72,12 @@ def _relative(baseline: float | None, current: float | None) -> float:
     return abs(current - baseline) / abs(baseline)
 
 
-def _severity(metric: str, change: float) -> str:
-    limit = THRESHOLDS[metric]
-    if change >= limit * 5:
+def _severity(metric: str, change: float, node: str) -> str:
+    limit = thresholds_for(node)[metric]
+    tiers = get_settings().severity
+    if change >= limit * tiers["critical"]:
         return "critical"
-    if change >= limit * 2:
+    if change >= limit * tiers["high"]:
         return "high"
     return "warning"
 
@@ -120,7 +131,7 @@ def partition_signals(
             checks.append(("mean_value", b_mean, c_mean, _relative(b_mean, c_mean)))
 
         for metric, baseline, current, change in checks:
-            if change < THRESHOLDS[metric]:
+            if change < thresholds_for(model)[metric]:
                 continue
             key = (model, column, metric)
             entry = worst.setdefault(key, [0, 0.0, None, None])
@@ -130,7 +141,7 @@ def partition_signals(
 
     return [
         Signal(model, column, metric, baseline, current, change,
-               _severity(metric, change), partitions=count)
+               _severity(metric, change, model), partitions=count)
         for (model, column, metric), (count, change, baseline, current) in worst.items()
     ]
 
@@ -189,11 +200,12 @@ def detect(
         if b_mean is not None or c_mean is not None:
             checks.append(("mean_value", b_mean, c_mean, _relative(b_mean, c_mean)))
 
+        limits = thresholds_for(model)
         for metric, baseline, current, change in checks:
-            if change >= THRESHOLDS[metric]:
+            if change >= limits[metric]:
                 signals.append(
                     Signal(model, column, metric, baseline, current,
-                           change, _severity(metric, change))
+                           change, _severity(metric, change, model))
                 )
 
         # min/max strings hain: inka koi bhi badalna bolne layak hai.
