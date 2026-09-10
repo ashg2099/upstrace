@@ -1,0 +1,26 @@
+{
+  "model": "qwen/qwen3.8-27b",
+  "prompt": "You are a data reliability engineer. A monitoring tool detected drift in a dbt\nwarehouse and traced it to a root node. Explain what most likely happened.\n\nROOT NODE\n  rides (source table)\n  columns with drift: member_casual\n\nEVIDENCE AT THE ROOT\n  member_casual.distinct_count: 2.0000 -> 4.0000  (100.0% change, severity critical, ratio x2.0000)\n  member_casual.min_value: changed\n\nLINEAGE (node <- its upstream dependencies)\n  rides <- (source)\n  agg_daily_rides <- fct_rides\n  fct_rides <- stg_rides\n  stg_rides <- rides\n\nDOWNSTREAM NODES THAT ALSO DRIFTED (node: the columns that drifted there)\n  agg_daily_rides: member_share\n  fct_rides: rider_type\n  stg_rides: rider_type\n\nRULES\n- You have not seen any rows. Reason only from the names and numbers above.\n- Column names carry meaning. A name that contradicts the values is a finding.\n- Ratios matter. A mean multiplied by a familiar constant suggests a unit change.\n- Downstream column names are renamed versions of the root column. If a downstream name states a unit and the values no longer fit it, say so\n  explicitly and name both units.\n- Metrics are computed over the whole table. If a change affected only part of\n  the data, the blended ratio understates it, so a ratio below a familiar\n  constant does not rule that constant out.\n- If the evidence is thin, say low confidence. Do not invent detail.\n- Never claim to know who deployed what; you have no commit history.\n\nReply with JSON only, matching this shape:\n{\n  \"summary\": \"one sentence, plain English, what happened\",\n  \"likely_causes\": [\n    {\n      \"cause\": \"specific and testable\",\n      \"confidence\": \"high | medium | low\",\n      \"reasoning\": \"why this fits the evidence\"\n    }\n  ],\n  \"checks_to_add\": [\n    \"a dbt test or SQL assertion that would catch this next time\"\n  ],\n  \"who_is_affected\": \"which downstream consumers see wrong numbers, and how\"\n}\n",
+  "provider": "groq",
+  "response": {
+    "checks_to_add": [
+      "dbt test: accepted_values on 'rides.member_casual' with values [0, 1] (or ['Member', 'Casual'] if string-based).",
+      "dbt test: unique on 'rides.member_casual' if it is intended to be a key, or not_null if it must always be present.",
+      "SQL assertion: SELECT COUNT(*) FROM rides WHERE member_casual NOT IN (0, 1) LIMIT 1; -- Should return 0 rows."
+    ],
+    "likely_causes": [
+      {
+        "cause": "Upstream data ingestion error introduced non-binary values (e.g., strings, nulls, or multi-digit integers) into the 'member_casual' column.",
+        "confidence": "high",
+        "reasoning": "The column name 'member_casual' strongly implies a binary flag (Member vs. Casual). The distinct count doubling from 2 to 4 indicates the introduction of two new, unexpected values. Since 'min_value' also changed, the new values likely include numbers outside the original 0-1 range (e.g., 2, 3, or negative numbers) or non-numeric types that alter the min/max calculation. This is a classic schema/value drift where the domain constraint was violated at the source."
+      },
+      {
+        "cause": "A change in the upstream system's encoding logic mapped rider types to a new 4-state categorical scale instead of a binary flag.",
+        "confidence": "medium",
+        "reasoning": "If the upstream system changed its definition of rider type to include more categories (e.g., Member, Casual, Guest, Staff), the distinct count would increase. However, the column name 'member_casual' would then be misleading. The downstream rename to 'rider_type' suggests the intent was to categorize, but the source column name contradicts a 4-state expansion. This is less likely than a data error because the name 'member_casual' is specific to a binary distinction."
+      }
+    ],
+    "summary": "The source table 'rides' experienced a data quality incident where the 'member_casual' column, which should contain binary values (0/1), now contains four distinct values, causing downstream rider type classifications to become invalid.",
+    "who_is_affected": "All downstream consumers of 'stg_rides', 'fct_rides', and 'agg_daily_rides' are affected. Specifically, 'stg_rides.rider_type' and 'fct_rides.rider_type' will now contain invalid or unexpected categories derived from the corrupted 'member_casual' values. 'agg_daily_rides.member_share' will be calculated incorrectly because the denominator or numerator for member rides will include invalid records, leading to skewed share percentages."
+  }
+}

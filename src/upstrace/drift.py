@@ -32,8 +32,9 @@ class Signal:
     current: float | None
     change: float
     severity: str
-    partitions: int = 0  
-
+    partitions: int = 0
+    baseline_text: str | None = None
+    current_text: str | None = None  
 
 def ensure_drift_table(con: duckdb.DuckDBPyConnection) -> None:
     con.execute(f"""
@@ -54,6 +55,14 @@ def ensure_drift_table(con: duckdb.DuckDBPyConnection) -> None:
     con.execute(f"""
         ALTER TABLE {METRICS_SCHEMA}.drift_signals
         ADD COLUMN IF NOT EXISTS partitions INTEGER
+    """)
+    con.execute(f"""
+        ALTER TABLE {METRICS_SCHEMA}.drift_signals
+        ADD COLUMN IF NOT EXISTS baseline_text VARCHAR
+    """)
+    con.execute(f"""
+        ALTER TABLE {METRICS_SCHEMA}.drift_signals
+        ADD COLUMN IF NOT EXISTS current_text VARCHAR
     """)
 
 
@@ -80,6 +89,19 @@ def _severity(metric: str, change: float, node: str) -> str:
     if change >= limit * tiers["high"]:
         return "high"
     return "warning"
+
+def _text_value(column: str, value) -> str | None:
+    """Render a min/max value for reporting, masked and bounded.
+
+    Long values are truncated because a max_value can be an entire JSON blob,
+    and the prompt has a budget.
+    """
+    if value is None:
+        return None
+    if get_settings().should_mask(column):
+        return "<masked>"
+    text = str(value)
+    return text if len(text) <= 120 else text[:117] + "..."
 
 def partition_signals(
     con: duckdb.DuckDBPyConnection,
@@ -213,7 +235,9 @@ def detect(
                                           ("max_value", b_max, c_max)):
             if baseline != current:
                 signals.append(
-                    Signal(model, column, metric, None, None, 1.0, "warning")
+                    Signal(model, column, metric, None, None, 1.0, "warning",
+                           baseline_text=_text_value(column, baseline),
+                           current_text=_text_value(column, current))
                 )
 
     signals += partition_signals(con, run_id, baseline_run_id)
@@ -226,10 +250,12 @@ def detect(
         con.execute(
             f"""INSERT INTO {METRICS_SCHEMA}.drift_signals
                 (detected_at, run_id, baseline_run_id, model_name, column_name,
-                 metric, baseline_value, current_value, change, severity, partitions)
-                VALUES (now(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                 metric, baseline_value, current_value, change, severity, partitions,
+                 baseline_text, current_text)
+                VALUES (now(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [run_id, baseline_run_id, s.model_name, s.column_name, s.metric,
-             s.baseline, s.current, s.change, s.severity, s.partitions],
+             s.baseline, s.current, s.change, s.severity, s.partitions,
+             s.baseline_text, s.current_text],
         )
 
     return signals

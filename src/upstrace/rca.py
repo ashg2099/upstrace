@@ -5,7 +5,6 @@ import duckdb
 from .config import METRICS_SCHEMA
 from .lineage import ancestors, descendants, graph
 
-
 @dataclass
 class Evidence:
     model_name: str
@@ -16,6 +15,8 @@ class Evidence:
     change: float
     severity: str
     partitions: int = 0
+    baseline_text: str | None = None
+    current_text: str | None = None
 
 @dataclass
 class Incident:
@@ -55,7 +56,8 @@ def load_signals(con: duckdb.DuckDBPyConnection, run_id: str) -> list[Evidence]:
     rows = con.execute(
         f"""
         select model_name, column_name, metric, baseline_value,
-               current_value, change, severity, coalesce(partitions, 0)
+               current_value, change, severity, coalesce(partitions, 0),
+               baseline_text, current_text
         from {METRICS_SCHEMA}.drift_signals
         where run_id = ?
         """,

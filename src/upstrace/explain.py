@@ -45,6 +45,11 @@ RULES
 - You have not seen any rows. Reason only from the names and numbers above.
 - Column names carry meaning. A name that contradicts the values is a finding.
 - Ratios matter. A mean multiplied by a familiar constant suggests a unit change.
+- min_value and max_value are the actual smallest and largest values in the
+  column, shown quoted. Compare them character by character: a change in casing,
+  whitespace, or padding with no change in row count means the values were
+  rewritten rather than replaced.
+- A value shown as '<masked>' was withheld for privacy. Do not guess what it was.
 - Downstream column names are renamed versions of the root column. If a downstream name states a unit and the values no longer fit it, say so
   explicitly and name both units.
 - Metrics are computed over the whole table. If a change affected only part of
@@ -62,9 +67,18 @@ def _format_evidence(incident: Incident) -> str:
     lines = []
     for e in incident.evidence:
         if e.metric in ("min_value", "max_value"):
-            lines.append(f"  {e.column_name}.{e.metric}: changed")
+            # The values themselves, not just the fact that they moved. When a
+            # column is renamed the clue is in the name; when values are
+            # rewritten - a casing change, a trimmed string, a new code - the
+            # clue is only visible here.
+            if e.baseline_text is not None or e.current_text is not None:
+                lines.append(
+                    f"  {e.column_name}.{e.metric}: "
+                    f"{e.baseline_text!r} -> {e.current_text!r}"
+                )
+            else:
+                lines.append(f"  {e.column_name}.{e.metric}: changed")
             continue
-
         line = (
             f"  {e.column_name}.{e.metric}: {e.baseline:,.4f} -> {e.current:,.4f}"
             f"  ({e.change:.1%} change, severity {e.severity}"

@@ -1,0 +1,21 @@
+{
+  "model": "qwen/qwen3.8-27b",
+  "prompt": "You are a data reliability engineer. A monitoring tool detected drift in a dbt\nwarehouse and traced it to a root node. Explain what most likely happened.\n\nROOT NODE\n  rides (source table)\n  columns with drift: member_casual\n\nEVIDENCE AT THE ROOT\n  member_casual.distinct_count: 2.0000 -> 4.0000  (100.0% change, severity critical, ratio x2.0000)\n  member_casual.min_value: 'casual' -> 'Casual'\n\nLINEAGE (node <- its upstream dependencies)\n  rides <- (source)\n  agg_daily_rides <- fct_rides\n  fct_rides <- stg_rides\n  stg_rides <- rides\n\nDOWNSTREAM NODES THAT ALSO DRIFTED (node: the columns that drifted there)\n  agg_daily_rides: member_share\n  fct_rides: rider_type\n  stg_rides: rider_type\n\nRULES\n- You have not seen any rows. Reason only from the names and numbers above.\n- Column names carry meaning. A name that contradicts the values is a finding.\n- Ratios matter. A mean multiplied by a familiar constant suggests a unit change.\n- min_value and max_value are the actual smallest and largest values in the\n  column, shown quoted. Compare them character by character: a change in casing,\n  whitespace, or padding with no change in row count means the values were\n  rewritten rather than replaced.\n- A value shown as '<masked>' was withheld for privacy. Do not guess what it was.\n- Downstream column names are renamed versions of the root column. If a downstream name states a unit and the values no longer fit it, say so\n  explicitly and name both units.\n- Metrics are computed over the whole table. If a change affected only part of\n  the data, the blended ratio understates it, so a ratio below a familiar\n  constant does not rule that constant out.\n- If the evidence is thin, say low confidence. Do not invent detail.\n- Never claim to know who deployed what; you have no commit history.\n\nReply with JSON only, matching this shape:\n{\n  \"summary\": \"one sentence, plain English, what happened\",\n  \"likely_causes\": [\n    {\n      \"cause\": \"specific and testable\",\n      \"confidence\": \"high | medium | low\",\n      \"reasoning\": \"why this fits the evidence\"\n    }\n  ],\n  \"checks_to_add\": [\n    \"a dbt test or SQL assertion that would catch this next time\"\n  ],\n  \"who_is_affected\": \"which downstream consumers see wrong numbers, and how\"\n}\n",
+  "provider": "groq",
+  "response": {
+    "checks_to_add": [
+      "dbt test: accepted_values on stg_rides.rider_type with ['member', 'casual'] (lowercase) to enforce consistent casing.",
+      "dbt test: unique on stg_rides.rider_type to ensure no duplicate casing variants exist.",
+      "SQL assertion: SELECT COUNT(*) FROM stg_rides WHERE rider_type NOT IN ('member', 'casual') should return 0."
+    ],
+    "likely_causes": [
+      {
+        "cause": "Upstream data ingestion or ETL process changed the casing of the 'member_casual' values from lowercase to title-case.",
+        "confidence": "high",
+        "reasoning": "The min_value changed from 'casual' to 'Casual', indicating a character-level rewrite rather than a replacement of the entire dataset. The distinct_count doubled from 2 to 4, which is consistent with the introduction of new casing variants (e.g., 'Member'/'member' and 'Casual'/'casual') coexisting or replacing the old ones, while the row count likely remained stable (implied by the focus on value drift rather than volume drift). This suggests a systematic transformation in the source or ingestion layer."
+      }
+    ],
+    "summary": "The source data for the 'member_casual' column was rewritten to use title-case values ('Casual') instead of lowercase, introducing a new distinct value and breaking downstream logic that likely relies on exact string matching.",
+    "who_is_affected": "Downstream consumers of fct_rides and agg_daily_rides will see incorrect rider_type classifications and skewed member_share metrics. Specifically, if downstream logic uses exact string matching (e.g., CASE WHEN rider_type = 'member'), the new 'Member' values will be misclassified or dropped, leading to undercounted member rides and inflated casual ride shares in agg_daily_rides."
+  }
+}

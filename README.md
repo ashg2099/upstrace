@@ -438,6 +438,12 @@ Six metrics are recorded per column, per run, and per day.
 100% and means nothing; a move from 0.1% to 1.1% is one percentage point and
 means a vendor stopped sending a field.
 
+`min_value` and `max_value` are reported with their actual values, not just as
+"changed" — a move from `'casual'` to `'Casual'` is a diagnosis, while "changed"
+is a shrug. They are the one place Upstrace handles real cell values rather than
+metrics, so `profile.mask_values` withholds them for columns that should never
+leave the warehouse.
+
 `distinct_count` is counted **exactly**, and floats are rounded to six decimals
 first. Both choices are explained in [determinism](#the-negative-controls-and-the-bug-they-found).
 
@@ -689,6 +695,10 @@ profile:
   # Refuse per-day profiling above this many distinct partitions. Guards against
   # a column that looks date-like but is effectively unique.
   max_partitions: 400
+  # Columns whose min/max values must never leave the warehouse. min_value and
+  # max_value are real cell values - the smallest value in an email column is a
+  # real email address. Matched columns report <masked> instead.
+  mask_values: []
 
 thresholds:
   # Relative change, except null_rate which is absolute percentage points.
@@ -753,6 +763,17 @@ controls**.
 
 Full per-scenario output: [`docs/eval-results.md`](docs/eval-results.md).
 Model comparison: [`docs/model-comparison.md`](docs/model-comparison.md).
+
+### Verified on a second dataset
+
+The benchmark above runs on the taxi data. To test the claim that the engine is
+dataset-agnostic, it was pointed at a Citi Bike dbt project it had never seen —
+different schema, different domain, a separate warehouse and config. It ran
+first attempt, produced zero signals on two identical runs, and named the correct
+root cause for an injected fault.
+
+It also found a real bug that 56 taxi scenarios could not:
+[`docs/second-dataset.md`](docs/second-dataset.md).
 
 ### Why per-partition profiling was necessary
 

@@ -57,6 +57,7 @@ class Settings:
     exclude: list[str]
     partition_columns: dict[str, str | None]
     max_partitions: int
+    mask_values: list[str]
     thresholds_default: dict[str, float]
     thresholds_overrides: dict[str, dict[str, float]] = field(default_factory=dict)
     severity: dict[str, float] = field(default_factory=lambda: dict(DEFAULT_SEVERITY))
@@ -73,6 +74,20 @@ class Settings:
         if any(fnmatch.fnmatch(node, pattern) for pattern in self.exclude):
             return False
         return any(fnmatch.fnmatch(node, pattern) for pattern in self.include)
+
+    # ------------------------------------------------------------------ masking
+
+    def should_mask(self, column: str) -> bool:
+        """Should this column's actual min/max values be withheld?
+
+        Upstrace sends metrics to an LLM, never rows - but min_value and
+        max_value ARE rows, one cell of them. The smallest value in an email
+        column is a real person's email address. Sending it would quietly break
+        the promise the rest of the design keeps, so columns matched here send a
+        placeholder instead of the value.
+        """
+        name = column.lower()
+        return any(fnmatch.fnmatch(name, pattern.lower()) for pattern in self.mask_values)
 
     # ---------------------------------------------------------------- partition
 
@@ -127,6 +142,7 @@ class Settings:
                 f"{k}={v if v is not None else 'off'}" for k, v in self.partition_columns.items()
             ) or "(auto for every node)",
             "max partitions": str(self.max_partitions),
+            "masked columns": ", ".join(self.mask_values) or "(none)",
             "thresholds": ", ".join(f"{k}={v}" for k, v in self.thresholds_default.items()),
             "threshold overrides": ", ".join(self.thresholds_overrides) or "(none)",
         }
@@ -173,6 +189,7 @@ def load_settings(config_path: Path | None = None) -> Settings:
         exclude=list(profile.get("exclude") or []),
         partition_columns=dict(profile.get("partition_column") or {}),
         max_partitions=int(profile.get("max_partitions") or 400),
+        mask_values=list(profile.get("mask_values") or []),
         thresholds_default={**DEFAULT_THRESHOLDS, **(thresholds.get("default") or {})},
         thresholds_overrides=dict(thresholds.get("overrides") or {}),
         severity={**DEFAULT_SEVERITY, **(raw.get("severity") or {})},
@@ -215,6 +232,13 @@ profile:
 
   # Guard rail: refuse to profile a table with more partitions than this.
   max_partitions: 400
+  
+  # Columns whose min/max values must never leave the warehouse. min_value and
+  # max_value are real cell values - the smallest value in an email column is a
+  # real email address. Matched columns report <masked> instead.
+  mask_values: []
+  #   - "*email*"
+  #   - "*_name"
 
 thresholds:
   # Relative change that counts as drift. null_rate is in percentage points.

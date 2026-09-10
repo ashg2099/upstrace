@@ -1,6 +1,7 @@
 import typer
 from rich.console import Console
 from rich.table import Table
+from rich.markup import escape
 
 from . import drift as drift_mod
 from . import faults as faults_mod
@@ -156,11 +157,22 @@ def drift() -> None:
 
     for s in signals:
         fmt = lambda v: "-" if v is None else (f"{v:,.4f}" if abs(v) < 1000 else f"{v:,.0f}")
+
+        if s.metric in ("min_value", "max_value"):
+            # Data values, not our strings - escape them so a value containing
+            # square brackets is not read as rich markup.
+            baseline_cell = escape(s.baseline_text) if s.baseline_text is not None else "-"
+            current_cell = escape(s.current_text) if s.current_text is not None else "-"
+            change_cell = "changed"
+        else:
+            baseline_cell = fmt(s.baseline)
+            current_cell = fmt(s.current)
+            change_cell = f"{s.change:.1%}"
+
         table.add_row(
             f"[{SEVERITY_STYLE[s.severity]}]{s.severity}[/{SEVERITY_STYLE[s.severity]}]",
             s.model_name, s.column_name, s.metric,
-            fmt(s.baseline), fmt(s.current),
-            "changed" if s.metric in ("min_value", "max_value") else f"{s.change:.1%}",
+            baseline_cell, current_cell, change_cell,
         )
 
     console.print(table)
@@ -192,7 +204,14 @@ def rca() -> None:
         console.print("  evidence:")
         for e in inc.evidence:
             if e.metric in ("min_value", "max_value"):
-                console.print(f"    - {e.column_name}.{e.metric} changed")
+                if e.baseline_text is not None or e.current_text is not None:
+                    console.print(
+                        f"    - {e.column_name}.{e.metric}: "
+                        f"{e.baseline_text!r} -> {e.current_text!r}",
+                        markup=False,
+                    )
+                else:
+                    console.print(f"    - {e.column_name}.{e.metric} changed")
             else:
                 console.print(
                     f"    - {e.column_name}.{e.metric}: "
