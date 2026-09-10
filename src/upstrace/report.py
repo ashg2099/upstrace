@@ -506,6 +506,7 @@ function lineage(g) {
 function evidenceRows(rows, withModel) {
   const max = Math.max(...rows.map(r => isText(r.metric) ? 0 : (r.change || 0)), .01);
   return rows.map(r => `<tr>
+    <td class="sev ${esc(r.severity)}">${esc(r.severity)}</td>
     ${withModel ? `<td>${esc(r.model)}</td>` : ''}
     <td>${esc(r.column)}</td>
     <td class="muted">${esc(r.metric)}</td>
@@ -514,7 +515,6 @@ function evidenceRows(rows, withModel) {
     <td class="num">${isText(r.metric) ? 'changed'
       : pct(r.change) + `<i class="bar" style="width:${Math.max(2, Math.min(1, r.change/max)*46)}px"></i>`}</td>
     <td class="num muted">${r.partitions ? r.partitions + 'd' : '—'}</td>
-    <td class="sev ${esc(r.severity)}">${esc(r.severity)}</td>
   </tr>`).join('');
 }
 
@@ -596,8 +596,8 @@ if (!data.incidents.length) {
       </div>` : ''}
 
       <div class="scroll" style="margin-top:1.1rem"><table>
-        <thead><tr><th>column</th><th>metric</th><th class="num">baseline</th>
-        <th class="num">current</th><th class="num">change</th><th class="num">window</th><th></th></tr></thead>
+        <thead><tr><th></th><th>column</th><th>metric</th><th class="num">baseline</th>
+        <th class="num">current</th><th class="num">change</th><th class="num">window</th></tr></thead>
         <tbody>${evidenceRows(inc.evidence.map(e => ({...e})), false)}</tbody>
       </table></div>
 
@@ -613,8 +613,8 @@ if (!data.incidents.length) {
 
 if ((data.signals || []).length) {
   html += `<h2>Every signal in this run</h2><div class="card"><div class="scroll"><table>
-    <thead><tr><th>node</th><th>column</th><th>metric</th><th class="num">baseline</th>
-    <th class="num">current</th><th class="num">change</th><th class="num">window</th><th></th></tr></thead>
+    <thead><tr><th></th><th>node</th><th>column</th><th>metric</th><th class="num">baseline</th>
+    <th class="num">current</th><th class="num">change</th><th class="num">window</th></tr></thead>
     <tbody>${evidenceRows(data.signals, true)}</tbody>
   </table></div></div>`;
 }

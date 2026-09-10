@@ -43,6 +43,17 @@ def _distinct_expr(col: str, data_type: str) -> str:
         return f"count(distinct round({col}, 6))"
     return f"count(distinct {col})"
 
+def _bound_expr(fn: str, col: str, data_type: str) -> str:
+    """min/max, rounded for floats - for the same reason distinct counts are.
+
+    sum() and avg() run in parallel and floating-point addition is not
+    associative, so an unchanged column can report a max of 22575.66999999999 on
+    one run and 22575.669999999995 on the next. That is not drift, and reporting
+    it as drift is how a tool teaches people to ignore it.
+    """
+    if _is_float(data_type):
+        return f"round({fn}({col}), 6)::varchar"
+    return f"{fn}({col})::varchar"
 
 def profile_column(
     con: duckdb.DuckDBPyConnection,
@@ -59,8 +70,8 @@ def profile_column(
         select
             count({col})                          as non_null_count,
             {_distinct_expr(col, data_type)}      as distinct_count,
-            min({col})::varchar                   as min_value,
-            max({col})::varchar                   as max_value,
+            {_bound_expr('min', col, data_type)}  as min_value,
+            {_bound_expr('max', col, data_type)}  as max_value,
             {mean_expr}                           as mean_value
         from {relation}
     """).fetchone()
@@ -168,8 +179,8 @@ def profile_partitions(
                 count(*)                          as row_count,
                 count({col})                      as non_null_count,
                 {_distinct_expr(col, dtype)}      as distinct_count,
-                min({col})::varchar               as min_value,
-                max({col})::varchar               as max_value,
+                {_bound_expr('min', col, dtype)}  as min_value,
+                {_bound_expr('max', col, dtype)}  as max_value,
                 {mean_expr}                       as mean_value
             from {model.relation}
             where {part} is not null
