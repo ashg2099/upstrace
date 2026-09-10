@@ -136,10 +136,32 @@ def fault(
 
 
 @app.command()
-def drift() -> None:
+def drift(
+    fail_on: str = typer.Option(
+        "none",
+        "--fail-on",
+        help="Exit non-zero when a signal at or above this severity is found: "
+             "critical, high, warning, or none.",
+    ),
+) -> None:
     """Compare the two most recent profile runs and report what moved."""
+    order = {"critical": 0, "high": 1, "warning": 2}
+    if fail_on != "none" and fail_on not in order:
+        raise SystemExit("--fail-on must be one of: critical, high, warning, none")
+
     con = connect()
+    runs = drift_mod.latest_runs(con, 2)
     signals = drift_mod.detect(con)
+
+    if len(runs) >= 2:
+        mismatch = drift_mod.volume_mismatch(con, runs[0], runs[1])
+        if mismatch:
+            baseline_rows, current_rows = mismatch
+            console.print(
+                f"[yellow]Warning:[/yellow] the two runs measured very different "
+                f"volumes - {baseline_rows:,} rows then {current_rows:,} now. "
+                "Every metric will look like it moved. Compare like for like."
+            )
 
     if not signals:
         console.print("No drift above threshold. Nothing moved.")
@@ -159,8 +181,6 @@ def drift() -> None:
         fmt = lambda v: "-" if v is None else (f"{v:,.4f}" if abs(v) < 1000 else f"{v:,.0f}")
 
         if s.metric in ("min_value", "max_value"):
-            # Data values, not our strings - escape them so a value containing
-            # square brackets is not read as rich markup.
             baseline_cell = escape(s.baseline_text) if s.baseline_text is not None else "-"
             current_cell = escape(s.current_text) if s.current_text is not None else "-"
             change_cell = "changed"
@@ -177,6 +197,16 @@ def drift() -> None:
 
     console.print(table)
     con.close()
+
+    # The exit code is what makes this usable in CI. Without it the job is green
+    # whatever the tool found, and "monitoring" means someone reading logs.
+    if fail_on != "none":
+        breaching = [s for s in signals if order[s.severity] <= order[fail_on]]
+        if breaching:
+            console.print(
+                f"\n[red]{len(breaching)} signal(s) at or above {fail_on}.[/red]"
+            )
+            raise typer.Exit(code=1)
     
 @app.command()
 def rca() -> None:

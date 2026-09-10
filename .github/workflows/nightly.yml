@@ -1,0 +1,50 @@
+name: nightly
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  self-check:
+    name: Detects a real fault, and nothing else
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install
+        run: pip install -e . "dbt-core==1.10.*" "dbt-duckdb==1.9.*"
+
+      - name: Build the demo warehouse
+        run: |
+          cp data/demo/*.parquet data/
+          python scripts/build_demo_warehouse.py
+
+      # Half the value of a data quality tool is not crying wolf. This asserts
+      # that two profile runs over unchanged data produce nothing at all - not
+      # even a warning.
+      - name: No false positives on unchanged data
+        run: upstrace drift --fail-on warning
+
+      # The other half is actually catching something. A green badge that only
+      # proved the tool stays quiet would be worthless.
+      - name: A real fault is detected
+        run: |
+          upstrace fault unit-change
+          cd transform && dbt run --profiles-dir . && cd ..
+          upstrace profile
+          if upstrace drift --fail-on critical; then
+            echo "::error::A unit change was injected and no critical signal was raised."
+            exit 1
+          fi
+          echo "Fault detected, as expected."
+
+      - name: Root cause
+        run: upstrace rca

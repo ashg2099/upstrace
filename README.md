@@ -1,5 +1,7 @@
 # Upstrace
 
+[![nightly](https://github.com/ashg2099/upstrace/actions/workflows/nightly.yml/badge.svg)](https://github.com/ashg2099/upstrace/actions/workflows/nightly.yml)
+
 When a data quality check fails, trace it upstream to the change that caused it.
 
 Upstrace profiles every column of a dbt project on every run, compares each day
@@ -374,13 +376,29 @@ three-month dataset. That is where the `days 31` column in the evidence table
 comes from — and shrinking the window is how the benchmark builds its
 one-week and one-day scenarios, which are the hard ones.
 
-Every injection rebuilds the pipeline with dbt, which reports success either way.
+Injection changes the raw table only — rebuild with dbt yourself afterwards, and
+watch it report success either way. The dashboard's fault buttons rebuild and
+reprofile in one step; the CLI leaves that to you so you can see dbt pass.
 
 ### `upstrace drift`
+
+```bash
+upstrace drift                        # report only
+upstrace drift --fail-on critical     # exit 1 if any critical signal
+upstrace drift --fail-on warning      # exit 1 if anything at all moved
+```
 
 Compares the two most recent profile runs, writes signals to
 `upstrace_meta.drift_signals`, and prints them worst-first. Two runs over
 unchanged data must print *No drift above threshold*.
+
+`--fail-on` is what makes this usable in CI. Without an exit code the job is
+green whatever the tool found, and "monitoring" means someone remembering to
+read logs.
+
+It also warns when the two runs measured very different row volumes — comparing
+a 500k-row sample against a 9.5M-row load makes every metric look like it moved,
+and the tool would otherwise report that nonsense confidently.
 
 ### `upstrace rca`
 
@@ -858,8 +876,10 @@ Stated plainly, because scope questions get asked:
 - **No warning when the two runs profiled different volumes.** Comparing a
   500k-row sample against a 9.5M-row load produces nonsense, and nothing
   currently stops you.
-- **No scheduler.** Profiling runs when you run it. A GitHub Actions workflow on
-  a cron is the intended production shape.
+- **No scheduler of its own.** Profiling runs when something runs it. The
+  intended production shape is a step after `dbt run` in CI or Airflow —
+  [`.github/workflows/nightly.yml`](.github/workflows/nightly.yml) does exactly
+  that against the demo data every night.
 
 ---
 

@@ -72,6 +72,48 @@ def latest_runs(con: duckdb.DuckDBPyConnection, n: int = 2) -> list[str]:
     ).fetchall()
     return [r[0] for r in rows]
 
+def run_volume(con: duckdb.DuckDBPyConnection, run_id: str) -> int:
+    """Total rows this run actually measured, across all nodes.
+
+    Every column of a node shares that node's row count, so taking the max per
+    node and summing gives the volume without needing a schema change.
+    """
+    row = con.execute(
+        f"""
+        select coalesce(sum(rows), 0) from (
+            select model_name, max(row_count) as rows
+            from {METRICS_SCHEMA}.column_profiles
+            where run_id = ?
+            group by 1
+        )
+        """,
+        [run_id],
+    ).fetchone()
+    return int(row[0] or 0)
+
+
+def volume_mismatch(
+    con: duckdb.DuckDBPyConnection,
+    run_id: str,
+    baseline_run_id: str,
+    tolerance: float = 0.5,
+) -> tuple[int, int] | None:
+    """Were the two runs measuring comparable amounts of data?
+
+    Comparing a 500,000-row sample against a 9.5M-row load produces confident
+    nonsense: every metric moves, nothing is drift. This does not block the
+    comparison - a genuine 60% growth in volume is itself worth reporting - but
+    it refuses to let the tool sound certain when the two sides are not alike.
+    """
+    baseline = run_volume(con, baseline_run_id)
+    current = run_volume(con, run_id)
+    if baseline == 0 or current == 0:
+        return None
+    ratio = current / baseline
+    if ratio > 1 + tolerance or ratio < 1 / (1 + tolerance):
+        return baseline, current
+    return None
+
 
 def _relative(baseline: float | None, current: float | None) -> float:
     if baseline in (None, 0):
