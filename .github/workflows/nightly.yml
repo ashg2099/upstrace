@@ -7,10 +7,28 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
 jobs:
   self-check:
     name: Detects a real fault, and nothing else
     runs-on: ubuntu-latest
+    
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+
+    env:
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      UPSTRACE_LLM_PROVIDER: groq
+      UPSTRACE_LLM_MODEL: qwen/qwen3.8-27b
 
     steps:
       - uses: actions/checkout@v4
@@ -30,11 +48,13 @@ jobs:
       # Half the value of a data quality tool is not crying wolf. This asserts
       # that two profile runs over unchanged data produce nothing at all - not
       # even a warning.
+      
       - name: No false positives on unchanged data
         run: upstrace drift --fail-on warning
 
       # The other half is actually catching something. A green badge that only
       # proved the tool stays quiet would be worthless.
+      
       - name: A real fault is detected
         run: |
           upstrace fault unit-change
@@ -48,3 +68,20 @@ jobs:
 
       - name: Root cause
         run: upstrace rca
+
+      # The warehouse still holds the injected fault, so the published page shows
+      # a real incident rather than an empty all-clear.
+      
+      - name: Build the report
+        run: |
+          mkdir -p site
+          upstrace report -o site/index.html
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - id: deploy
+        uses: actions/deploy-pages@v4

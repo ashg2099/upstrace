@@ -369,6 +369,25 @@ def show_config() -> None:
     for key, value in settings.describe().items():
         table.add_row(key, value)
     console.print(table)
+    
+@app.command()
+def report(
+    output: str = typer.Option("docs/report.html", "--output", "-o", help="Where to write the HTML."),
+    no_explain: bool = typer.Option(False, "--no-explain", help="Skip the LLM explanations."),
+) -> None:
+    """Write a self-contained HTML report of the latest analysis."""
+    from pathlib import Path
+
+    from . import report as report_mod
+
+    con = connect()
+    payload = report_mod.build_payload(con, with_explanations=not no_explain)
+    con.close()
+
+    path = report_mod.write(payload, Path(output))
+    size_kb = path.stat().st_size / 1024
+    console.print(f"[green]Wrote {path}[/] ({size_kb:.0f} KB, {len(payload['incidents'])} incident(s))")
+    console.print("Open it in a browser, or publish it - it needs no server.")
 
 if __name__ == "__main__":
     app()
