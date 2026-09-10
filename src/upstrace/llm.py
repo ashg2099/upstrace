@@ -17,6 +17,8 @@ from pathlib import Path
 
 import requests
 
+import time
+
 from .config import PROJECT_ROOT
 
 CACHE_DIR = PROJECT_ROOT / "cache" / "llm"
@@ -65,25 +67,52 @@ def _write_cache(prompt: str, response: dict, provider: str, model: str) -> None
 # providers
 # --------------------------------------------------------------------------
 
+# Groq's free tier caps output tokens per minute. It rejects a request whose
+# *expected* output exceeds the cap, and "expected" means max_tokens - not what
+# the model actually writes. Left unset, the default asks for far more than these
+# answers need (1768 against a limit of 1000) and every call is refused.
+GROQ_MAX_OUTPUT_TOKENS = int(os.environ.get("UPSTRACE_LLM_MAX_TOKENS", "900"))
+
+
 def _call_groq(prompt: str, model: str) -> str:
     key = os.environ.get("GROQ_API_KEY")
     if not key:
         raise SystemExit("GROQ_API_KEY is not set. export it, or use another provider.")
 
-    response = requests.post(
-        "https://api.groq.com/openai/v1/chat/completions",
-        headers={"Authorization": f"Bearer {key}"},
-        json={
-            "model": model,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0,
-            "response_format": {"type": "json_object"},
-        },
-        timeout=90,
-    )
-    if response.status_code != 200:
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0,
+        "response_format": {"type": "json_object"},
+        "max_tokens": GROQ_MAX_OUTPUT_TOKENS,
+    }
+
+    for attempt in range(3):
+        response = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {key}"},
+            json=payload,
+            timeout=90,
+        )
+        if response.status_code == 200:
+            return response.json()["choices"][0]["message"]["content"]
+
+        # The limit is per minute, so a report with several incidents will hit it
+        # legitimately rather than through any fault of its own. Waiting is the
+        # correct response; failing is not.
+        if response.status_code == 429 and attempt < 2:
+            try:
+                wait = int(float(response.headers.get("retry-after", 20)))
+            except (TypeError, ValueError):
+                wait = 20
+            wait = min(max(wait, 5), 65)
+            print(f"  Groq rate limit hit; waiting {wait}s and retrying")
+            time.sleep(wait)
+            continue
+
         raise SystemExit(f"Groq returned {response.status_code}: {response.text[:400]}")
-    return response.json()["choices"][0]["message"]["content"]
+
+    raise SystemExit("Groq kept rate limiting after three attempts.")
 
 
 def _call_gemini(prompt: str, model: str) -> str:

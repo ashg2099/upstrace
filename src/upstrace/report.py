@@ -254,7 +254,10 @@ def build_payload(
                 from .explain import explain as explain_incident
 
                 entry["explanation"] = explain_incident(inc, use_cache=True)
-            except Exception as exc:  # a missing key must not lose the report
+            # SystemExit too: the LLM layer raises it for API errors, and a
+            # rate-limited explanation must not take the whole report with it.
+            # Detection already passed; this part is commentary.
+            except (Exception, SystemExit) as exc:
                 entry["explanation"] = {"error": f"{type(exc).__name__}: {exc}"}
 
         payload["incidents"].append(entry)
