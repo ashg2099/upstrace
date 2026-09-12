@@ -8,9 +8,7 @@ Upstrace profiles every column of a dbt project on every run, compares each day
 against its own history, walks the lineage graph to name the one node where a
 problem started, and asks an LLM to explain it in a sentence a human can act on.
 
-![The dashboard showing a critical incident traced to yellow_trips](<![The dashboard showing a critical incident traced to yellow_trips](https://raw.githubusercontent.com/ashg2099/upstrace/main/docs/screenshot-incident.png)>)
-
----
+![The dashboard showing a critical incident traced to yellow_trips](https://raw.githubusercontent.com/ashg2099/upstrace/main/docs/screenshot-incident.png)
 
 ## Contents
 
@@ -268,7 +266,7 @@ upstrace fault reset
 
 The LLM sees the evidence table and the lineage. It never sees a single row.
 
-![The generated explanation](<![The generated explanation](https://raw.githubusercontent.com/ashg2099/upstrace/main/docs/screenshot-chart.png)>)
+![The generated explanation](https://raw.githubusercontent.com/ashg2099/upstrace/main/docs/screenshot-chart.png)
 
 > **The source data for trip_distance likely switched from miles to kilometers,
 > causing a ~1.6x increase in values that propagated through the pipeline.**
