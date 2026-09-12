@@ -826,6 +826,32 @@ This repo's own nightly workflow deliberately does **not** post to Slack: it
 injects a fault every night on purpose, and a channel that cries wolf nightly is
 the exact failure mode this tool exists to prevent.
 
+### On a schedule
+
+Upstrace has no scheduler — whatever runs your pipeline runs it. Add
+`upstrace profile && upstrace drift --slack-on warning` after `dbt run` and
+alerts arrive whenever that pipeline does.
+
+A clean run posts nothing at all: the notifier returns without sending when no
+signal meets the threshold. The channel stays quiet until something actually
+moves, which is the only way an alert channel survives a month.
+
+From cron, use a wrapper script and set everything explicitly — cron does not
+load your shell profile, so a job that works in your terminal will silently do
+nothing at 6am:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+cd /srv/analytics && source .venv/bin/activate
+export UPSTRACE_SLACK_WEBHOOK='https://hooks.slack.com/services/...'
+dbt run && upstrace profile && upstrace drift --slack-on warning
+```
+
+In GitHub Actions, `schedule.cron` is UTC — 06:00 IST is `30 0 * * *`. In
+Airflow, a `BashOperator` downstream of the dbt task: with `--fail-on critical`
+the task turns red *and* the channel gets the root cause, from one command.
+
 ## Environment variables
 
 Configuration lives in `upstrace.yml`; secrets and overrides live in the
@@ -967,9 +993,8 @@ Stated plainly, because scope questions get asked:
   `rolling` uses a robust z-score but knows nothing about weekday/weekend or
   holiday effects, so it will flag a quiet Sunday on a weekday-shaped table.
 - **No scheduler of its own.** Profiling runs when something runs it. The
-  intended production shape is a step after `dbt run` in CI or Airflow —
-  [`.github/workflows/nightly.yml`](.github/workflows/nightly.yml) does exactly
-  that against the demo data every night.
+  intended production shape is a step after `dbt run` in CI or Airflow — see
+  [running it on a schedule](#on-a-schedule).[`.github/workflows/nightly.yml`](.github/workflows/nightly.yml) does exactly that against the demo data every night.
 
 ---
 
@@ -1017,14 +1042,3 @@ without downloading anything.
 ## License
 
 MIT
-
-|  |  |
-| - | - |
-|  |  |
-|  |  |
-|  |  |
-|  |  |
-|  |  |
-|  |  |
-|  |  |
-|  |  |

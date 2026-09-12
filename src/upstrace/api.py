@@ -41,7 +41,11 @@ DEMO_SAMPLE = int(os.environ.get("UPSTRACE_DEMO_SAMPLE", "0")) or None
 
 def _connect() -> duckdb.DuckDBPyConnection:
     if not WAREHOUSE_DB.exists():
-        raise HTTPException(503, "No warehouse yet. Run: python scripts/load_duckdb.py")
+        raise HTTPException(
+            503,
+            "No warehouse yet. Check the 'warehouse:' path in upstrace.yml, then "
+            "build it with dbt. For this repo's demo: python scripts/load_duckdb.py",
+        )
     return duckdb.connect(str(WAREHOUSE_DB))
 
 

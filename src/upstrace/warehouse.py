@@ -7,7 +7,8 @@ def connect(read_only: bool = False) -> duckdb.DuckDBPyConnection:
     if not WAREHOUSE_DB.exists():
         raise SystemExit(
             f"No warehouse at {WAREHOUSE_DB}.\n"
-            "Run: python scripts/load_duckdb.py"
+            "Check the 'warehouse:' path in upstrace.yml, then build it with dbt.\n"
+            "For this repo's demo: python scripts/load_duckdb.py"
         )
     return duckdb.connect(str(WAREHOUSE_DB), read_only=read_only)
 
