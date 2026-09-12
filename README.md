@@ -1,6 +1,6 @@
 # Upstrace
 
-[![nightly](https://github.com/ashg2099/upstrace/actions/workflows/nightly.yml/badge.svg)](https://github.com/ashg2099/upstrace/actions/workflows/nightly.yml)
+[![nightly](https://github.com/ashg2099/upstrace/actions/workflows/nightly.yml/badge.svg)](https://github.com/ashg2099/upstrace/actions/workflows/nightly.yml)  [![PyPI](https://img.shields.io/pypi/v/upstrace)](https://pypi.org/project/upstrace/)
 
 When a data quality check fails, trace it upstream to the change that caused it.
 
@@ -100,7 +100,7 @@ Four steps, each doing one thing:
 | Dashboard             | **React 18** + **Vite**                                            | Hand-written SVG charts and lineage graph, no chart library                                                      |
 | Alerting              | **Slack incoming webhooks** (stdlib `urllib`)                          | Root-cause summary in a channel, with no HTTP dependency added                                                   |
 | LLM                   | **Groq** (`qwen/qwen3.8-27b`), with Gemini, Ollama and a mock provider | Free tier, structured JSON output, responses cached by prompt hash and committed                                 |
-| Packaging             | **Hatchling**, **Docker** (two build targets)                      | `pip install -e .` or `docker build --target runtime`                                                        |
+| Packaging             | **Hatchling**, **PyPI**, **Docker** (two build targets)      | `pip install upstrace`, or `docker build --target runtime`                                                   |
 | Dataset               | **NYC TLC yellow taxi**, Jan–Mar 2024 (9.5M rows)                       | Public, messy, and has real date grain                                                                           |
 
 Everything in this project runs on free tiers or on your own machine. There is no
@@ -117,7 +117,17 @@ paid dependency anywhere.
 - git
 - About 1.5 GB of free disk for the full dataset
 
-### 1. Clone and install
+### 1. Install
+
+```bash
+pip install upstrace
+```
+
+That is all you need to run Upstrace against your own dbt project — skip to
+[Run it on your own dbt project](#run-it-on-your-own-dbt-project).
+
+The demo below needs this repo as well, because the demo pipeline and its data
+live here:
 
 ```bash
 git clone https://github.com/ashg2099/upstrace
@@ -130,8 +140,8 @@ pip install -e .
 pip install "dbt-core==1.10.*" "dbt-duckdb==1.9.*"
 ```
 
-`pip install -e .` installs the package **and** puts the `upstrace` command on
-your PATH. Check it:
+`pip install -e .` installs the package from your clone instead of PyPI, so your
+edits take effect immediately. Check the command is on your PATH:
 
 ```bash
 upstrace --help
@@ -608,8 +618,7 @@ timestamp column on the tables you care about.
 ### 1. Install Upstrace
 
 ```bash
-git clone https://github.com/ashg2099/upstrace
-cd upstrace && pip install -e .
+pip install upstrace
 ```
 
 ### 2. Build your own project once
@@ -986,13 +995,14 @@ Stated plainly, because scope questions get asked:
 - **Cannot detect a fault that predates its baseline.** `previous_run` compares
   against the last run and `rolling` against a trailing window, so a defect that
   was already there before either window began reads as normal. Changepoint
-  detection over the full history is the fix, and is not built
+  detection over the full history is the fix, and is not built.
 - **No seasonality model.** `previous_run` uses fixed per-table thresholds;
   `rolling` uses a robust z-score but knows nothing about weekday/weekend or
   holiday effects, so it will flag a quiet Sunday on a weekday-shaped table.
 - **No scheduler of its own.** Profiling runs when something runs it. The
   intended production shape is a step after `dbt run` in CI or Airflow — see
-  [running it on a schedule](#on-a-schedule).[`.github/workflows/nightly.yml`](.github/workflows/nightly.yml) does exactly that against the demo data every night.
+  [running it on a schedule](#on-a-schedule).
+  [`.github/workflows/nightly.yml`](.github/workflows/nightly.yml) does exactly that against the demo data every night.
 
 ---
 
