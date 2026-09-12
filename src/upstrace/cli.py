@@ -8,7 +8,6 @@ from pathlib import Path
 from . import drift as drift_mod
 from . import faults as faults_mod
 from . import rca as rca_mod
-from . import explain as explain_mod
 from . import evaluate as evaluate_mod
 from .config import METRICS_SCHEMA
 from .manifest import list_models
@@ -330,6 +329,8 @@ def explain(
     no_cache: bool = typer.Option(False, "--no-cache", help="Force a fresh model call."),
 ) -> None:
     """Ask a language model what the root-cause incidents actually mean."""
+    from . import explain as explain_mod
+    
     con = connect()
     incidents = rca_mod.analyse(con)
     con.close()
