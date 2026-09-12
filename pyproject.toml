@@ -2,7 +2,33 @@
 name = "upstrace"
 version = "0.1.0"
 description = "Trace a failed data quality check upstream to the change that caused it."
+readme = "README.md"
 requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Ashwin Gururaj" }]
+keywords = [
+    "dbt",
+    "data-quality",
+    "data-observability",
+    "duckdb",
+    "lineage",
+    "root-cause-analysis",
+    "data-engineering",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Database",
+    "Topic :: Software Development :: Quality Assurance",
+]
 dependencies = [
     "duckdb>=1.0",
     "typer>=0.12",
@@ -25,3 +51,8 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/upstrace"]
+
+[project.urls]
+Homepage = "https://github.com/ashg2099/upstrace"
+Repository = "https://github.com/ashg2099/upstrace"
+Issues = "https://github.com/ashg2099/upstrace/issues"
