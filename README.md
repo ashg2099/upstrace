@@ -19,10 +19,12 @@ problem started, and asks an LLM to explain it in a sentence a human can act on.
 - [Tech stack](#tech-stack)
 - [Quick start — the demo, from zero](#quick-start--the-demo-from-zero)
 - [Command reference](#command-reference)
+- [Two ways to judge a value](#two-ways-to-judge-a-value)
 - [What the metrics mean](#what-the-metrics-mean)
 - [The dashboard](#the-dashboard)
 - [Run it on your own dbt project](#run-it-on-your-own-dbt-project)
 - [Configuration reference](#configuration-reference)
+- [Slack alerts](#slack-alerts)
 - [Environment variables](#environment-variables)
 - [How well does it work](#how-well-does-it-work)
 - [What it does not do](#what-it-does-not-do)
@@ -98,6 +100,7 @@ Four steps, each doing one thing:
 | Config                | **PyYAML** (`upstrace.yml`)                                            | Nothing project-specific lives in Python                                                                         |
 | API                   | **FastAPI** + **Uvicorn**                                          | One process serves JSON and the built SPA                                                                        |
 | Dashboard             | **React 18** + **Vite**                                            | Hand-written SVG charts and lineage graph, no chart library                                                      |
+| Alerting              | **Slack incoming webhooks** (stdlib `urllib`)                          | Root-cause summary in a channel, with no HTTP dependency added                                                   |
 | LLM                   | **Groq** (`qwen/qwen3.8-27b`), with Gemini, Ollama and a mock provider | Free tier, structured JSON output, responses cached by prompt hash and committed                                 |
 | Packaging             | **Hatchling**, **Docker** (two build targets)                      | `pip install -e .` or `docker build --target runtime`                                                        |
 | Dataset               | **NYC TLC yellow taxi**, Jan–Mar 2024 (9.5M rows)                       | Public, messy, and has real date grain                                                                           |
@@ -303,16 +306,18 @@ hypothesis, are what make this worth more than a threshold alert.
 Every command takes `--help`.
 
 ```
-upstrace models    List the dbt models Upstrace can see, and what each depends on.
-upstrace profile   Measure every column of every model and append to the metric history.
-upstrace history   Show how one column's measurements have moved across runs.
-upstrace fault     Break the raw data on purpose, or put it back.
-upstrace drift     Compare the two most recent profile runs and report what moved.
-upstrace rca       Turn the drift signals from the latest run into root causes.
-upstrace explain   Ask a language model what the root-cause incidents actually mean.
-upstrace eval      Inject every seeded defect in turn and score the root-cause analysis.
-upstrace init      Write a starter upstrace.yml in the current directory.
-upstrace config    Show the resolved configuration and where it came from.
+upstrace models     List the dbt models Upstrace can see, and what each depends on.
+upstrace profile    Measure every column of every model and append to the metric history.
+upstrace history    Show how one column's measurements have moved across runs.
+upstrace fault      Break the raw data on purpose, or put it back.
+upstrace drift      Compare the two most recent profile runs and report what moved.
+upstrace rca        Turn the drift signals from the latest run into root causes.
+upstrace explain    Ask a language model what the root-cause incidents actually mean.
+upstrace eval       Inject every seeded defect in turn and score the root-cause analysis.
+upstrace init       Write a starter upstrace.yml in the current directory.
+upstrace config     Show the resolved configuration and where it came from.
+upstrace report     Write a self-contained HTML report of the latest analysis.
+upstrace slack-test Send a dummy message to confirm a Slack webhook works.
 ```
 
 ### `upstrace init` / `upstrace config`
@@ -384,8 +389,10 @@ reprofile in one step; the CLI leaves that to you so you can see dbt pass.
 
 ```bash
 upstrace drift                        # report only
+upstrace drift --baseline rolling     # override the configured baseline mode
 upstrace drift --fail-on critical     # exit 1 if any critical signal
 upstrace drift --fail-on warning      # exit 1 if anything at all moved
+upstrace drift --slack-on warning     # also post to Slack
 ```
 
 Compares the two most recent profile runs, writes signals to
@@ -399,6 +406,10 @@ read logs.
 It also warns when the two runs measured very different row volumes — comparing
 a 500k-row sample against a 9.5M-row load makes every metric look like it moved,
 and the tool would otherwise report that nonsense confidently.
+
+`--slack-on` posts the run to Slack at or above a severity. It is independent of
+`--fail-on`, and alerts are sent *before* the exit-code check — so a run that
+fails CI still notifies. See [Slack alerts](#slack-alerts).
 
 ### `upstrace rca`
 
@@ -438,6 +449,39 @@ baseline before every scenario, so it is safe to interrupt.
 > `--report` overwrites its target. Commit the previous report before rerunning
 > with a smaller `--limit` or `--sample`, or you will replace a full result with
 > a partial one.
+
+## Two ways to judge a value
+
+A metric moved — compared to what? Upstrace supports two baselines.
+
+**`previous_run`** (default) compares each partition against its own value in the
+previous profile run. It is exact, needs no history, and catches a change the
+moment it appears. It cannot see a fault that was already in place before you
+started profiling — that value simply becomes "normal".
+
+**`rolling`** compares each partition against a trailing window of its own
+history using a median/MAD robust z-score, so one bad day does not move the bar.
+A signal must clear both the statistical test and the configured practical
+threshold, so a 0.4% move on a very stable column is not called an incident.
+
+```yaml
+baseline:
+  mode: rolling             # or previous_run
+  window: 28                # trailing partitions to compare against
+  z: 3.5                    # robust z-score threshold
+  min_history: 14           # skip a partition with less history than this
+  min_partition_share: 0.2  # skip partitions far smaller than the window median
+```
+
+Or per run: `upstrace drift --baseline rolling`.
+
+Rolling is **experimental**. On clean taxi data it surfaced real anomalies
+nothing had planted — stray rows dated 2002, 2008, 2009 and 2023, a snowstorm on
+2024-02-13, and a source-format change on 2024-02-15 — none of which
+`previous_run` can structurally see. But it shares a weakness with every
+trailing-window method: a fault in place for the whole window *becomes* the
+baseline. Catching that needs changepoint detection over the full history,
+tracked in [#1](../../issues/1).
 
 ## What the metrics mean
 
@@ -729,6 +773,15 @@ thresholds:
   # Per-node overrides, glob-matched, merged over the defaults.
   overrides: {}
 
+baseline:
+  # previous_run compares a partition to its own value in the last run.
+  # rolling compares it to a trailing window of its own history.
+  mode: previous_run
+  window: 28
+  z: 3.5
+  min_history: 14
+  min_partition_share: 0.2
+
 # Multipliers of the threshold at which each severity begins.
 severity:
   warning: 1.0
@@ -736,26 +789,65 @@ severity:
   critical: 5.0
 ```
 
+## Slack alerts
+
+Upstrace can post a run's incidents to a Slack channel.
+
+1. Create an [incoming webhook](https://api.slack.com/messaging/webhooks) for the channel you want.
+2. `export UPSTRACE_SLACK_WEBHOOK='https://hooks.slack.com/services/...'`
+3. `upstrace slack-test` — confirms the webhook before you rely on it.
+
+Then any drift run posts automatically:
+
+```bash
+upstrace drift --slack-on warning --report-url https://you.github.io/upstrace/
+```
+
+The message leads with the **root cause and its blast radius**, then the evidence
+behind it — not a flat list of every correlated signal:
+
+> 🔴 **Upstrace: 1 root cause, 15 signals**
+>
+> **Root cause** — `yellow_trips` (source) · `trip_distance` → 3 downstream:
+> agg_daily_revenue, fct_trips, stg_trips
+
+That distinction is the point. Fifteen alerts across four models read as four
+problems; one root with a blast radius reads as one.
+
+`--slack-on` takes `critical`, `high` or `warning`, and is independent of
+`--fail-on`: CI can alert on warnings while only failing the build on criticals.
+Alerts fire before the exit-code check, so a failing run still notifies.
+
+The notifier uses only the standard library, so alerting adds no dependency.
+`--report-url` adds an *Open report* button pointing at a published
+`upstrace report` output.
+
+This repo's own nightly workflow deliberately does **not** post to Slack: it
+injects a fault every night on purpose, and a channel that cries wolf nightly is
+the exact failure mode this tool exists to prevent.
+
 ## Environment variables
 
 Configuration lives in `upstrace.yml`; secrets and overrides live in the
 environment (or `.env`, which is gitignored).
 
-| Variable                     | Purpose                                                |
-| ---------------------------- | ------------------------------------------------------ |
-| `GROQ_API_KEY`             | API key for the Groq provider                          |
-| `UPSTRACE_LLM_PROVIDER`    | `groq`, `gemini`, `ollama` or `mock`           |
-| `UPSTRACE_LLM_MODEL`       | model id, e.g.`qwen/qwen3.8-27b`                     |
-| `UPSTRACE_CONFIG`          | path to a specific`upstrace.yml`, skipping discovery |
-| `UPSTRACE_WAREHOUSE`       | override the warehouse path                            |
-| `UPSTRACE_DBT_PROJECT_DIR` | override the dbt project path                          |
-| `UPSTRACE_METRICS_SCHEMA`  | override the metadata schema name                      |
-| `UPSTRACE_DEMO_SAMPLE`     | rows the dashboard's reset button loads (demo only)    |
-
 LLM responses are cached on disk under `cache/llm/`, keyed by a hash of the
 prompt. The cache is committed, so every explanation in this repo reproduces
 without a key. Change the prompt or the evidence and the hash changes, so a cache
 hit always means the same question.
+
+| Variable                     | Purpose                                                      |
+| ---------------------------- | ------------------------------------------------------------ |
+| `GROQ_API_KEY`             | API key for the Groq provider                                |
+| `UPSTRACE_LLM_PROVIDER`    | `groq`, `gemini`, `ollama` or `mock`                 |
+| `UPSTRACE_LLM_MODEL`       | model id, e.g.`qwen/qwen3.8-27b`                           |
+| `UPSTRACE_CONFIG`          | path to a specific`upstrace.yml`, skipping discovery       |
+| `UPSTRACE_WAREHOUSE`       | override the warehouse path                                  |
+| `UPSTRACE_DBT_PROJECT_DIR` | override the dbt project path                                |
+| `UPSTRACE_METRICS_SCHEMA`  | override the metadata schema name                            |
+| `UPSTRACE_BASELINE_MODE`   | `previous_run` or `rolling`, overriding `upstrace.yml` |
+| `UPSTRACE_SLACK_WEBHOOK`   | Slack incoming-webhook URL for alerts                        |
+| `UPSTRACE_DEMO_SAMPLE`     | rows the dashboard's reset button loads (demo only)          |
 
 ---
 
@@ -867,15 +959,13 @@ Stated plainly, because scope questions get asked:
 - **DuckDB only.** The profiler's SQL is DuckDB dialect. A Snowflake or BigQuery
   adapter would touch exactly one file, `profiler.py`, but that file has not been
   written.
-- **Run-to-run comparison, not a learned baseline.** Each partition is compared to
-  the same partition in the previous profile run. Against live data you would
-  compare each partition to its own rolling history and flag deviation from a
-  distribution, not from a single prior value.
-- **Thresholds are fixed numbers, not statistics.** Configurable per table, but
-  still constants. A seasonality-aware model is the obvious next step.
-- **No warning when the two runs profiled different volumes.** Comparing a
-  500k-row sample against a 9.5M-row load produces nonsense, and nothing
-  currently stops you.
+- **Cannot detect a fault that predates its baseline.** `previous_run` compares
+  against the last run and `rolling` against a trailing window, so a defect that
+  was already there before either window began reads as normal. Changepoint
+  detection over the full history is the fix, and is not built
+- **No seasonality model.** `previous_run` uses fixed per-table thresholds;
+  `rolling` uses a robust z-score but knows nothing about weekday/weekend or
+  holiday effects, so it will flag a quiet Sunday on a weekday-shaped table.
 - **No scheduler of its own.** Profiling runs when something runs it. The
   intended production shape is a step after `dbt run` in CI or Airflow —
   [`.github/workflows/nightly.yml`](.github/workflows/nightly.yml) does exactly
@@ -893,6 +983,8 @@ src/upstrace/        the engine - names no table, no dataset
   manifest.py        read dbt manifest.json into nodes and edges
   profiler.py        whole-table and per-partition column profiles
   drift.py           threshold comparison and severity
+  notify.py          Slack notifications - stdlib only
+  report.py          the self-contained HTML report
   lineage.py         ancestors / descendants over the dbt graph
   rca.py             the root-cause rule
   llm.py             providers (groq / gemini / ollama / mock) + prompt-hash cache
@@ -915,7 +1007,7 @@ Dockerfile           two targets: runtime (tool only), demo (tool + data)
 `transform/`, `faults.py` and `scenarios.py` are the demo pipeline and the
 evaluation fixture. The engine never references them.
 
-## Datac
+## Data
 
 [NYC TLC yellow taxi trip records](https://www.nyc.gov/site/tlc/about/tlc-trip-record-data.page),
 January–March 2024 — 9.5M rows. A 400,000-row reservoir sample spanning 91 days
@@ -925,3 +1017,14 @@ without downloading anything.
 ## License
 
 MIT
+
+|  |  |
+| - | - |
+|  |  |
+|  |  |
+|  |  |
+|  |  |
+|  |  |
+|  |  |
+|  |  |
+|  |  |
