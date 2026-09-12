@@ -2,6 +2,8 @@ import typer
 from rich.console import Console
 from rich.table import Table
 from rich.markup import escape
+import os
+from pathlib import Path
 
 from . import drift as drift_mod
 from . import faults as faults_mod
@@ -12,6 +14,7 @@ from .config import METRICS_SCHEMA
 from .manifest import list_models
 from .profiler import run_profile
 from .warehouse import connect
+from . import notify as slack
 
 app = typer.Typer(
     add_completion=False,
@@ -137,18 +140,51 @@ def fault(
 
 @app.command()
 def drift(
+    baseline: str = typer.Option(
+        None, "--baseline",
+        help="Override the configured baseline: previous-run or rolling.",
+    ),
+    
     fail_on: str = typer.Option(
         "none",
         "--fail-on",
         help="Exit non-zero when a signal at or above this severity is found: "
              "critical, high, warning, or none.",
     ),
+    slack_webhook: str = typer.Option(
+        None,
+        "--slack-webhook",
+        help="Slack incoming-webhook URL (or set UPSTRACE_SLACK_WEBHOOK).",
+    ),
+    slack_on: str = typer.Option(
+        "warning",
+        "--slack-on",
+        help="Minimum severity to post to Slack: critical | high | warning.",
+    ),
+    report_url: str = typer.Option(
+        None,
+        "--report-url",
+        help="Link included in the Slack message (e.g. your GitHub Pages report).",
+    ),
 ) -> None:
     """Compare the two most recent profile runs and report what moved."""
     order = {"critical": 0, "high": 1, "warning": 2}
     if fail_on != "none" and fail_on not in order:
         raise SystemExit("--fail-on must be one of: critical, high, warning, none")
+    
+    if slack_on not in order:
+        raise SystemExit("--slack-on must be one of: critical, high, warning")
 
+    if baseline:
+        mode = baseline.replace("-", "_")
+        if mode not in ("previous_run", "rolling"):
+            raise SystemExit("--baseline must be previous-run or rolling")
+        os.environ["UPSTRACE_BASELINE_MODE"] = mode
+        # Settings are cached at import time, so the environment has to be
+        # re-read or this flag is silently ignored.
+        from .settings import get_settings
+        get_settings(reload=True)
+    
     con = connect()
     runs = drift_mod.latest_runs(con, 2)
     signals = drift_mod.detect(con)
@@ -176,6 +212,8 @@ def drift(
     table.add_column("baseline", justify="right")
     table.add_column("current", justify="right")
     table.add_column("change", justify="right")
+    table.add_column("days", justify="right")
+    table.add_column("since")
 
     for s in signals:
         fmt = lambda v: "-" if v is None else (f"{v:,.4f}" if abs(v) < 1000 else f"{v:,.0f}")
@@ -193,10 +231,41 @@ def drift(
             f"[{SEVERITY_STYLE[s.severity]}]{s.severity}[/{SEVERITY_STYLE[s.severity]}]",
             s.model_name, s.column_name, s.metric,
             baseline_cell, current_cell, change_cell,
+            str(s.partitions) if s.partitions else "-",
+            s.first_partition or "-",
         )
+
+    webhook = slack.resolve_webhook(slack_webhook)
+    # rca reads the signals this run just persisted, so it has to happen before
+    # the connection closes - and only when there is somewhere to send it.
+    incidents = rca_mod.analyse(con) if webhook else []
 
     console.print(table)
     con.close()
+
+    # Slack before the exit code: typer.Exit stops the function here, and the run
+    # that fails CI is exactly the run worth alerting on.
+    if webhook:
+        from .config import PROJECT_ROOT
+        from .settings import get_settings
+
+        try:
+            sent = slack.notify(
+                signals,
+                webhook=webhook,
+                project=PROJECT_ROOT.name,
+                baseline_mode=get_settings().baseline_mode,
+                threshold=slack_on,
+                report_url=report_url,
+                incidents=incidents,
+            )
+        except slack.SlackError as exc:
+            console.print(f"[yellow]Slack notification failed:[/] {escape(str(exc))}")
+        else:
+            if sent:
+                console.print(f"[green]Posted to Slack[/] (at or above {slack_on})")
+            else:
+                console.print(f"[dim]Nothing at or above {slack_on} - no Slack message sent.[/]")
 
     # The exit code is what makes this usable in CI. Without it the job is green
     # whatever the tool found, and "monitoring" means someone reading logs.
@@ -207,6 +276,7 @@ def drift(
                 f"\n[red]{len(breaching)} signal(s) at or above {fail_on}.[/red]"
             )
             raise typer.Exit(code=1)
+
     
 @app.command()
 def rca() -> None:
@@ -243,9 +313,10 @@ def rca() -> None:
                 else:
                     console.print(f"    - {e.column_name}.{e.metric} changed")
             else:
+                since = f"  since {e.first_partition}" if e.first_partition else ""
                 console.print(
                     f"    - {e.column_name}.{e.metric}: "
-                    f"{e.baseline:,.4f} -> {e.current:,.4f} ({e.change:.1%})"
+                    f"{e.baseline:,.4f} -> {e.current:,.4f} ({e.change:.1%}){since}"
                 )
 
     console.print(
@@ -304,7 +375,6 @@ def eval(
     report: str = typer.Option("docs/eval-results.md", "--report", help="Where to write the report."),
 ) -> None:
     """Inject every seeded defect in turn and score the root-cause analysis."""
-    from pathlib import Path
 
     from .config import PROJECT_ROOT
 
@@ -376,7 +446,6 @@ def report(
     no_explain: bool = typer.Option(False, "--no-explain", help="Skip the LLM explanations."),
 ) -> None:
     """Write a self-contained HTML report of the latest analysis."""
-    from pathlib import Path
 
     from . import report as report_mod
 
@@ -388,6 +457,22 @@ def report(
     size_kb = path.stat().st_size / 1024
     console.print(f"[green]Wrote {path}[/] ({size_kb:.0f} KB, {len(payload['incidents'])} incident(s))")
     console.print("Open it in a browser, or publish it - it needs no server.")
+    
+@app.command("slack-test")
+def slack_test(
+    webhook: str = typer.Option(None, "--slack-webhook", help="Webhook URL (or UPSTRACE_SLACK_WEBHOOK)."),
+) -> None:
+    """Send a dummy message to confirm the webhook works."""
+    url = slack.resolve_webhook(webhook)
+    if not url:
+        console.print("[red]No webhook.[/] Pass --slack-webhook or set UPSTRACE_SLACK_WEBHOOK.")
+        raise typer.Exit(1)
+    try:
+        slack.post(url, {"text": "✅ Upstrace webhook is working."})
+    except slack.SlackError as exc:
+        console.print(f"[red]Failed:[/] {escape(str(exc))}")
+        raise typer.Exit(1)
+    console.print("[green]Sent.[/] Check your channel.")
 
 if __name__ == "__main__":
     app()

@@ -12,6 +12,7 @@ dependencies = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.27",
     "pyyaml",
+    "certifi",
 ]
 
 [project.scripts]

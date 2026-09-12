@@ -200,13 +200,14 @@ def build_payload(
                 "change": _num(change) or 0.0,
                 "severity": severity,
                 "partitions": int(partitions or 0),
+                "first_partition": first_partition,
             }
             for (model, column, metric, baseline, current, change, severity,
-                 partitions, baseline_text, current_text) in con.execute(
+                 partitions, baseline_text, current_text, first_partition) in con.execute(
                 f"""
                 select model_name, column_name, metric, baseline_value, current_value,
                        change, severity, coalesce(partitions, 0),
-                       baseline_text, current_text
+                       baseline_text, current_text, first_partition
                 from {METRICS_SCHEMA}.drift_signals
                 where run_id = ?
                 order by case severity
@@ -239,6 +240,7 @@ def build_payload(
                     "change": e.change,
                     "severity": e.severity,
                     "partitions": e.partitions,
+                    "first_partition": e.first_partition,
                 }
                 for e in inc.evidence
             ],
@@ -518,6 +520,7 @@ function evidenceRows(rows, withModel) {
     <td class="num">${isText(r.metric) ? 'changed'
       : pct(r.change) + `<i class="bar" style="width:${Math.max(2, Math.min(1, r.change/max)*46)}px"></i>`}</td>
     <td class="num muted">${r.partitions ? r.partitions + 'd' : '—'}</td>
+    <td class="muted">${esc(r.first_partition ?? '—')}</td>
   </tr>`).join('');
 }
 
@@ -600,7 +603,7 @@ if (!data.incidents.length) {
 
       <div class="scroll" style="margin-top:1.1rem"><table>
         <thead><tr><th></th><th>column</th><th>metric</th><th class="num">baseline</th>
-        <th class="num">current</th><th class="num">change</th><th class="num">window</th></tr></thead>
+        <th class="num">current</th><th class="num">change</th><th class="num">window</th><th>since</th></tr></thead>
         <tbody>${evidenceRows(inc.evidence.map(e => ({...e})), false)}</tbody>
       </table></div>
 
@@ -617,7 +620,7 @@ if (!data.incidents.length) {
 if ((data.signals || []).length) {
   html += `<h2>Every signal in this run</h2><div class="card"><div class="scroll"><table>
     <thead><tr><th></th><th>node</th><th>column</th><th>metric</th><th class="num">baseline</th>
-    <th class="num">current</th><th class="num">change</th><th class="num">window</th></tr></thead>
+    <th class="num">current</th><th class="num">change</th><th class="num">window</th><th>since</th></tr></thead>
     <tbody>${evidenceRows(data.signals, true)}</tbody>
   </table></div></div>`;
 }

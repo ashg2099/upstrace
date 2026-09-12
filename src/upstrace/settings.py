@@ -60,6 +60,11 @@ class Settings:
     mask_values: list[str]
     thresholds_default: dict[str, float]
     thresholds_overrides: dict[str, dict[str, float]] = field(default_factory=dict)
+    baseline_mode: str = "previous_run"
+    baseline_window: int = 28
+    baseline_z: float = 3.5
+    baseline_min_history: int = 14
+    baseline_min_partition_share: float = 0.2
     severity: dict[str, float] = field(default_factory=lambda: dict(DEFAULT_SEVERITY))
 
     # ---------------------------------------------------------------- selection
@@ -145,6 +150,7 @@ class Settings:
             "masked columns": ", ".join(self.mask_values) or "(none)",
             "thresholds": ", ".join(f"{k}={v}" for k, v in self.thresholds_default.items()),
             "threshold overrides": ", ".join(self.thresholds_overrides) or "(none)",
+            "baseline": f"{self.baseline_mode} (window {self.baseline_window}, z {self.baseline_z})",
         }
 
 
@@ -172,6 +178,7 @@ def load_settings(config_path: Path | None = None) -> Settings:
 
     profile = raw.get("profile") or {}
     thresholds = raw.get("thresholds") or {}
+    baseline = raw.get("baseline") or {}
 
     warehouse = _resolve(base, os.getenv("UPSTRACE_WAREHOUSE") or raw.get("warehouse") or "warehouse/upstrace.duckdb")
     dbt_dir = _resolve(base, os.getenv("UPSTRACE_DBT_PROJECT_DIR") or raw.get("dbt_project_dir") or "transform")
@@ -192,6 +199,11 @@ def load_settings(config_path: Path | None = None) -> Settings:
         mask_values=list(profile.get("mask_values") or []),
         thresholds_default={**DEFAULT_THRESHOLDS, **(thresholds.get("default") or {})},
         thresholds_overrides=dict(thresholds.get("overrides") or {}),
+        baseline_mode=os.getenv("UPSTRACE_BASELINE_MODE") or baseline.get("mode") or "previous_run",
+        baseline_window=int(baseline.get("window") or 28),
+        baseline_z=float(baseline.get("z") or 3.5),
+        baseline_min_history=int(baseline.get("min_history") or 14),
+        baseline_min_partition_share=float(baseline.get("min_partition_share") or 0.2),
         severity={**DEFAULT_SEVERITY, **(raw.get("severity") or {})},
     )
 
@@ -252,6 +264,19 @@ thresholds:
   overrides: {}
   #   agg_marketing_events:
   #     row_count: 0.40
+
+# How a value is judged. 'previous_run' compares each partition to the same
+# partition in the previous profile run - simple, and blind to the fact that a
+# Saturday is not a Tuesday. 'rolling' compares each partition to the median and
+# spread of the days before it, which needs only one run and survives
+# seasonality.
+baseline:
+  mode: previous_run     # or: rolling
+  window: 28             # days of history each partition is judged against
+  z: 3.5                 # robust z-score at which a partition is unusual
+  min_history: 14        # refuse to judge until this many days exist
+  min_partition_share: 0.2   # ignore a day holding less than this share of a
+                             # normal day's rows - it is a gap, not a data point
 
 # A signal is a warning at 1x its threshold, high at 2x, critical at 5x.
 severity:

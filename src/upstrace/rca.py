@@ -17,6 +17,7 @@ class Evidence:
     partitions: int = 0
     baseline_text: str | None = None
     current_text: str | None = None
+    first_partition: str | None = None
 
 @dataclass
 class Incident:
@@ -57,7 +58,7 @@ def load_signals(con: duckdb.DuckDBPyConnection, run_id: str) -> list[Evidence]:
         f"""
         select model_name, column_name, metric, baseline_value,
                current_value, change, severity, coalesce(partitions, 0),
-               baseline_text, current_text
+               baseline_text, current_text, first_partition
         from {METRICS_SCHEMA}.drift_signals
         where run_id = ?
         """,

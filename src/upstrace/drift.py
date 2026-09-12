@@ -35,6 +35,7 @@ class Signal:
     partitions: int = 0
     baseline_text: str | None = None
     current_text: str | None = None  
+    first_partition: str | None = None
 
 def ensure_drift_table(con: duckdb.DuckDBPyConnection) -> None:
     con.execute(f"""
@@ -63,6 +64,11 @@ def ensure_drift_table(con: duckdb.DuckDBPyConnection) -> None:
     con.execute(f"""
         ALTER TABLE {METRICS_SCHEMA}.drift_signals
         ADD COLUMN IF NOT EXISTS current_text VARCHAR
+    """)
+    
+    con.execute(f"""
+        ALTER TABLE {METRICS_SCHEMA}.drift_signals
+        ADD COLUMN IF NOT EXISTS first_partition VARCHAR
     """)
 
 
@@ -145,6 +151,205 @@ def _text_value(column: str, value) -> str | None:
     text = str(value)
     return text if len(text) <= 120 else text[:117] + "..."
 
+ROLLING_METRICS = ["row_count", "null_rate", "distinct_count", "mean_value"]
+
+
+def _median(values: list[float]) -> float:
+    ordered = sorted(values)
+    mid = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[mid]
+    return (ordered[mid - 1] + ordered[mid]) / 2
+
+
+def _robust_z(value: float, history: list[float]) -> tuple[float, float]:
+    """How unusual is this value against its own recent history?
+
+    Median and MAD rather than mean and standard deviation, because a fault that
+    runs for thirty days corrupts the mean it would be measured against. The
+    median tolerates up to half the window being wrong; the mean tolerates one
+    bad day.
+
+    0.6745 is the scale factor that makes MAD comparable to a standard deviation
+    for normally distributed data, so the threshold reads like a familiar z.
+    """
+    med = _median(history)
+    mad = _median([abs(v - med) for v in history])
+    if mad == 0:
+        # A perfectly flat history. Any movement at all is a departure, but
+        # calling it infinitely unusual is useless, so score it by relative size.
+        if abs(value - med) <= max(abs(med), 1e-9) * 1e-6:
+            return 0.0, med
+        scale = max(abs(med), 1e-9)
+        return abs(value - med) / scale * 10, med
+    return abs(0.6745 * (value - med) / mad), med
+
+
+# row_count is a property of the table on that day, not of each column - every
+# column of a node shares it. Evaluating it per column reports one fact thirty
+# times and buries everything else.
+COLUMN_METRICS = ["null_rate", "distinct_count", "mean_value"]
+COLUMN_METRIC_INDEX = {"null_rate": 1, "distinct_count": 2, "mean_value": 3}
+
+
+def _flag(
+    points: list[tuple[str, float]],
+    window: int,
+    min_history: int,
+    limit: float,
+) -> list[tuple[str, float, float, float]]:
+    """Walk a series and return every point unusual against the days before it."""
+    flagged = []
+    for i in range(min_history, len(points)):
+        value = points[i][1]
+        if value is None:
+            continue
+        history = [p[1] for p in points[max(0, i - window):i] if p[1] is not None]
+        if len(history) < min_history:
+            continue
+        z, med = _robust_z(float(value), [float(h) for h in history])
+        if z >= limit:
+            flagged.append((points[i][0], z, float(value), med))
+    return flagged
+
+
+def _grade(z: float, limit: float, tiers: dict[str, float]) -> str:
+    if z >= limit * tiers["critical"]:
+        return "critical"
+    if z >= limit * tiers["high"]:
+        return "high"
+    return "warning"
+
+
+def _to_signal(model: str, column: str, metric: str, flagged: list) -> Signal | None:
+    """Turn flagged partitions into a signal, if the movement is worth reporting.
+
+    A z-score alone is not enough. A perfectly stable series has a tiny MAD, so a
+    1.3% move scores as wildly unusual - statistically true, practically
+    worthless, and the fastest way to teach people to ignore the tool. A signal
+    has to clear both bars: unusual for this column, AND large enough that a
+    human would care. The second bar is the threshold that already exists in
+    config.
+    """
+    day, z, value, med = max(flagged, key=lambda f: f[1])
+
+    if metric == "null_rate":
+        practical = abs(value - med)          # percentage points, as configured
+    else:
+        practical = _relative(med, value)
+
+    if practical < thresholds_for(model)[metric]:
+        return None
+
+    return Signal(
+        model, column, metric,
+        baseline=med,
+        current=value,
+        change=_relative(med, value),
+        severity="warning",           # overwritten by the caller
+        partitions=len(flagged),
+        # The first flagged day answers "since when", which a two-run
+        # comparison structurally cannot.
+        first_partition=min(f[0] for f in flagged),
+    )
+
+
+def rolling_signals(con: duckdb.DuckDBPyConnection, run_id: str) -> list[Signal]:
+    """Judge each partition against the days before it, within a single run.
+
+    This is the detector a real deployment wants. Comparing to the previous run
+    assumes yesterday's data never changes and that every day is like every
+    other; neither is true. Comparing to a trailing window asks a better
+    question - is today unusual for this column - and needs no baseline run at
+    all, so it works the first time it is ever run.
+    """
+    settings = get_settings()
+    window = settings.baseline_window
+    min_history = settings.baseline_min_history
+    limit = settings.baseline_z
+    share = settings.baseline_min_partition_share
+    tiers = settings.severity
+
+    signals: list[Signal] = []
+
+    # ---- volume, once per node ------------------------------------------
+    volume: dict[str, list[tuple[str, float]]] = {}
+    for model, day, rows in con.execute(
+        f"""
+        select model_name, cast(partition_value as varchar), max(row_count)
+        from {METRICS_SCHEMA}.partition_profiles
+        where run_id = ?
+        group by 1, 2
+        order by 1, 2
+        """,
+        [run_id],
+    ).fetchall():
+        volume.setdefault(model, []).append((day, float(rows)))
+
+    for model, points in volume.items():
+        if len(points) <= min_history:
+            continue
+        flagged = _flag(points, window, min_history, limit)
+        if flagged:
+            signal = _to_signal(model, "(table)", "row_count", flagged)
+            if signal:
+                signal.severity = _grade(max(f[1] for f in flagged), limit, tiers)
+                if len(flagged) < 2:
+                    signal.severity = "warning"
+                signals.append(signal)
+
+    # ---- column metrics, skipping days that are not really days ----------
+    rows = con.execute(
+        f"""
+        select model_name, column_name, cast(partition_value as varchar),
+               row_count, null_rate, distinct_count, mean_value
+        from {METRICS_SCHEMA}.partition_profiles
+        where run_id = ?
+        order by model_name, column_name, partition_value
+        """,
+        [run_id],
+    ).fetchall()
+
+    series: dict[tuple[str, str], list[tuple]] = {}
+    for model, column, day, *values in rows:
+        series.setdefault((model, column), []).append((day, values))
+
+    for (model, column), points in series.items():
+        if len(points) <= min_history:
+            continue
+
+        # A day holding 2 rows out of a typical 117,000 is a gap in the data,
+        # not a day with unusual values. Judging its mean against a normal day's
+        # is meaningless, and it produces one alarm per metric per column -
+        # dozens of signals for a single underlying fact, which the volume check
+        # above already reports once.
+        typical = _median([float(p[1][0]) for p in points if p[1][0] is not None] or [0.0])
+        floor = typical * share
+        dense = [p for p in points if p[1][0] is not None and float(p[1][0]) >= floor]
+        if len(dense) <= min_history:
+            continue
+
+        for metric in COLUMN_METRICS:
+            index = COLUMN_METRIC_INDEX[metric]
+            flagged = _flag(
+                [(p[0], p[1][index]) for p in dense], window, min_history, limit
+            )
+            if not flagged:
+                continue
+            signal = _to_signal(model, column, metric, flagged)
+            if signal is None:
+                continue
+            signal.severity = _grade(max(f[1] for f in flagged), limit, tiers)
+            if len(flagged) < 2:
+                # One unusual day is weather, a holiday, an outage upstream that
+                # already fixed itself. A shift that persists is a pipeline
+                # problem. Both are worth recording; only one is worth waking
+                # someone for.
+                signal.severity = "warning"
+            signals.append(signal)
+
+    return signals
+
 def partition_signals(
     con: duckdb.DuckDBPyConnection,
     run_id: str,
@@ -209,12 +414,45 @@ def partition_signals(
         for (model, column, metric), (count, change, baseline, current) in worst.items()
     ]
 
+def _persist(
+    con: duckdb.DuckDBPyConnection,
+    run_id: str,
+    baseline_run_id: str | None,
+    signals: list[Signal],
+) -> list[Signal]:
+    order = {"critical": 0, "high": 1, "warning": 2}
+    signals.sort(key=lambda s: (order[s.severity], -s.change))
+
+    con.execute(f"delete from {METRICS_SCHEMA}.drift_signals where run_id = ?", [run_id])
+    for s in signals:
+        con.execute(
+            f"""INSERT INTO {METRICS_SCHEMA}.drift_signals
+                (detected_at, run_id, baseline_run_id, model_name, column_name,
+                 metric, baseline_value, current_value, change, severity, partitions,
+                 baseline_text, current_text, first_partition)
+                VALUES (now(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            [run_id, baseline_run_id, s.model_name, s.column_name, s.metric,
+             s.baseline, s.current, s.change, s.severity, s.partitions,
+             s.baseline_text, s.current_text, s.first_partition],
+        )
+    return signals
+
 def detect(
     con: duckdb.DuckDBPyConnection,
     run_id: str | None = None,
     baseline_run_id: str | None = None,
 ) -> list[Signal]:
     ensure_drift_table(con)
+    
+    settings = get_settings()
+
+    if settings.baseline_mode == "rolling":
+        runs = latest_runs(con, 1)
+        if not runs:
+            raise SystemExit("No profile runs yet. Run: upstrace profile")
+        run_id = run_id or runs[0]
+        signals = rolling_signals(con, run_id)
+        return _persist(con, run_id, None, signals)
 
     if run_id is None or baseline_run_id is None:
         runs = latest_runs(con, 2)
@@ -283,21 +521,4 @@ def detect(
                 )
 
     signals += partition_signals(con, run_id, baseline_run_id)
-    
-    order = {"critical": 0, "high": 1, "warning": 2}
-    signals.sort(key=lambda s: (order[s.severity], -s.change))
-
-    con.execute(f"delete from {METRICS_SCHEMA}.drift_signals where run_id = ?", [run_id])
-    for s in signals:
-        con.execute(
-            f"""INSERT INTO {METRICS_SCHEMA}.drift_signals
-                (detected_at, run_id, baseline_run_id, model_name, column_name,
-                 metric, baseline_value, current_value, change, severity, partitions,
-                 baseline_text, current_text)
-                VALUES (now(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            [run_id, baseline_run_id, s.model_name, s.column_name, s.metric,
-             s.baseline, s.current, s.change, s.severity, s.partitions,
-             s.baseline_text, s.current_text],
-        )
-
-    return signals
+    return _persist(con, run_id, baseline_run_id, signals)
