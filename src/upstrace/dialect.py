@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Protocol
 
 import pandas as pd
+import os
 
 
 class Cursor(Protocol):
@@ -141,14 +142,153 @@ class DuckDBDialect(Dialect):
         # Renaming the local variable breaks it.
         con.execute(f"INSERT INTO {table} SELECT * FROM frame")
 
+def _qmark_to_pyformat(sql: str) -> str:
+    """DuckDB's ? placeholders into psycopg's %s, ignoring string literals.
 
+    The engine writes qmark SQL because that is what DuckDB takes. Rather than
+    rewrite every call site for a second paramstyle, translate here.
+    """
+    out = []
+    in_string = False
+    for ch in sql:
+        if ch == "'":
+            in_string = not in_string
+            out.append(ch)
+        elif ch == "?" and not in_string:
+            out.append("%s")
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+class _PgConnection:
+    """Makes a psycopg connection behave like a DuckDB one.
+
+    psycopg 3's execute() already returns a cursor you can fetch from, which is
+    most of the contract. The gap is the parameter style, closed above. Anything
+    else - cursor(), commit(), close() - falls through to the real connection.
+    """
+
+    def __init__(self, raw) -> None:
+        self._raw = raw
+
+    def execute(self, sql: str, params=None):
+        if params is None:
+            return self._raw.execute(sql)
+        return self._raw.execute(_qmark_to_pyformat(sql), params)
+
+    def close(self) -> None:
+        self._raw.close()
+
+    def __getattr__(self, name):
+        return getattr(self._raw, name)
+
+
+def _split_relation(relation: str) -> tuple[str | None, str]:
+    """(schema, table) from whatever the manifest called the relation.
+
+    dbt writes anything from `table` to `"db"."schema"."table"` depending on
+    adapter and quoting config. Take the last two parts and drop the quotes.
+    """
+    parts = [p.strip('"') for p in relation.split(".")]
+    if len(parts) == 1:
+        return None, parts[0]
+    return parts[-2], parts[-1]
+
+
+class PostgresDialect(Dialect):
+    name = "postgres"
+    double_type = "DOUBLE PRECISION"
+
+    NUMERIC_TYPES = {
+        "smallint", "integer", "bigint",
+        "decimal", "numeric", "real", "double precision",
+    }
+    FLOAT_TYPES = {"real", "double precision", "numeric", "decimal"}
+
+    def __init__(self, dsn: str) -> None:
+        self.dsn = dsn
+
+    def connect(self, read_only: bool = False):
+        import psycopg
+
+        # autocommit because the engine never opens a transaction of its own -
+        # it was written against DuckDB, where every execute() is committed.
+        raw = psycopg.connect(self.dsn, autocommit=True)
+        if read_only:
+            raw.execute("SET default_transaction_read_only = on")
+        return _PgConnection(raw)
+
+    def list_columns(self, con, relation: str) -> list[tuple[str, str]]:
+        schema, table = _split_relation(relation)
+        if schema is None:
+            rows = con.execute(
+                """
+                select column_name, data_type
+                from information_schema.columns
+                where table_name = ?
+                order by ordinal_position
+                """,
+                [table],
+            ).fetchall()
+        else:
+            rows = con.execute(
+                """
+                select column_name, data_type
+                from information_schema.columns
+                where table_schema = ? and table_name = ?
+                order by ordinal_position
+                """,
+                [schema, table],
+            ).fetchall()
+        return [(name, dtype) for name, dtype in rows]
+
+    def _base(self, data_type: str) -> str:
+        return data_type.lower().split("(")[0].strip()
+
+    def is_numeric(self, data_type: str) -> bool:
+        return self._base(data_type) in self.NUMERIC_TYPES
+
+    def is_float(self, data_type: str) -> bool:
+        return self._base(data_type) in self.FLOAT_TYPES
+
+    def distinct_expr(self, col: str, data_type: str) -> str:
+        # Postgres has no round(double precision, int) - only round(numeric, int).
+        if self.is_float(data_type):
+            return f"count(distinct round({col}::numeric, 6))"
+        return f"count(distinct {col})"
+
+    def bound_expr(self, fn: str, col: str, data_type: str) -> str:
+        if self.is_float(data_type):
+            return f"round({fn}({col})::numeric, 6)::varchar"
+        return f"{fn}({col})::varchar"
+
+    def mean_expr(self, col: str, data_type: str) -> str:
+        if self.is_numeric(data_type):
+            return f"avg({col})::double precision"
+        return "cast(null as double precision)"
+
+    def insert_frame(self, con, table: str, frame: pd.DataFrame) -> None:
+        # COPY is Postgres's bulk path, and the reason this is a dialect method
+        # at all: DuckDB reads the DataFrame straight out of local scope, which
+        # has no equivalent here.
+        columns = ", ".join(self.quote(c) for c in frame.columns)
+        clean = frame.astype(object).where(pd.notnull(frame), None)
+        with con.cursor().copy(f"COPY {table} ({columns}) FROM STDIN") as copy:
+            for row in clean.itertuples(index=False, name=None):
+                copy.write_row(row)
+                
 def get_dialect(settings=None) -> Dialect:
     from .settings import get_settings
 
     settings = settings or get_settings()
-    name = getattr(settings, "dialect", "duckdb")
+    name = (os.getenv("UPSTRACE_DIALECT") or getattr(settings, "dialect", "duckdb")).lower()
 
     if name == "duckdb":
         return DuckDBDialect(settings.warehouse)
 
-    raise SystemExit(f"Unknown dialect {name!r}. Supported: duckdb.")
+    if name == "postgres":
+        dsn = os.getenv("UPSTRACE_DSN") or str(settings.warehouse)
+        return PostgresDialect(dsn)
+
+    raise SystemExit(f"Unknown dialect {name!r}. Supported: duckdb, postgres.")

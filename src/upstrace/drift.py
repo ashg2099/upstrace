@@ -37,7 +37,10 @@ class Signal:
     current_text: str | None = None  
     first_partition: str | None = None
 
-def ensure_drift_table(con: duckdb.DuckDBPyConnection) -> None:
+def ensure_drift_table(con) -> None:
+    from .dialect import get_dialect
+
+    double = get_dialect().double_type
     con.execute(f"""
         CREATE TABLE IF NOT EXISTS {METRICS_SCHEMA}.drift_signals (
             detected_at      TIMESTAMP,
@@ -46,9 +49,9 @@ def ensure_drift_table(con: duckdb.DuckDBPyConnection) -> None:
             model_name       VARCHAR,
             column_name      VARCHAR,
             metric           VARCHAR,
-            baseline_value   DOUBLE,
-            current_value    DOUBLE,
-            change           DOUBLE,
+            baseline_value   {double},
+            current_value    {double},
+            change           {double},
             severity         VARCHAR
         )
     """)
@@ -384,10 +387,11 @@ def partition_signals(
     ).fetchall()
 
     # (model, column, metric) -> [partitions over threshold, worst change,
-    #                             baseline at worst, current at worst]
+    #                             baseline at worst, current at worst,
+    #                             earliest partition over threshold]
     worst: dict[tuple[str, str, str], list] = {}
 
-    for (model, column, _partition,
+    for (model, column, partition_value,
          b_rows, c_rows, b_null, c_null,
          b_dist, c_dist, b_mean, c_mean) in rows:
 
@@ -403,15 +407,22 @@ def partition_signals(
             if change < thresholds_for(model)[metric]:
                 continue
             key = (model, column, metric)
-            entry = worst.setdefault(key, [0, 0.0, None, None])
+            entry = worst.setdefault(key, [0, 0.0, None, None, None])
             entry[0] += 1
             if change > entry[1]:
-                entry[1:] = [change, baseline, current]
+                entry[1:4] = [change, baseline, current]
+            # The earliest partition over threshold answers "since when". A
+            # whole-table comparison cannot know this; per-partition can, and
+            # was throwing the answer away.
+            if entry[4] is None or partition_value < entry[4]:
+                entry[4] = partition_value
 
     return [
         Signal(model, column, metric, baseline, current, change,
-               _severity(metric, change, model), partitions=count)
-        for (model, column, metric), (count, change, baseline, current) in worst.items()
+               _severity(metric, change, model), partitions=count,
+               first_partition=str(first) if first is not None else None)
+        for (model, column, metric), (count, change, baseline, current, first)
+        in worst.items()
     ]
 
 def _persist(

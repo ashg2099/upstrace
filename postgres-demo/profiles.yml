@@ -1,0 +1,12 @@
+postgres_demo:
+  target: dev
+  outputs:
+    dev:
+      type: postgres
+      host: localhost
+      port: 5433
+      user: upstrace
+      password: upstrace
+      dbname: analytics
+      schema: analytics
+      threads: 4

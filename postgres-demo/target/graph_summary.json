@@ -1,0 +1,1 @@
+{"_invocation_id": "6c88c266-9b4f-4653-b0da-2eb4b265fc38", "linked": {"0": {"name": "source.postgres_demo.raw.orders", "type": "source", "succ": [1]}, "1": {"name": "model.postgres_demo.stg_orders", "type": "model", "succ": [3]}, "2": {"name": "model.postgres_demo.agg_daily_orders", "type": "model"}, "3": {"name": "model.postgres_demo.fct_orders", "type": "model", "succ": [2]}}}

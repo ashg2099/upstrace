@@ -1,0 +1,16 @@
+project: postgres-demo
+dialect: postgres
+warehouse: postgresql://upstrace:upstrace@localhost:5433/analytics
+dbt_project_dir: .
+metrics_schema: upstrace_meta
+
+profile:
+  include: ["*"]
+  exclude: []
+
+thresholds:
+  default:
+    row_count: 0.02
+    null_rate: 0.01
+    distinct_count: 0.10
+    mean_value: 0.05

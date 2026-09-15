@@ -1,0 +1,13 @@
+name: postgres_demo
+version: "1.0.0"
+profile: postgres_demo
+
+model-paths: ["models"]
+target-path: "target"
+
+models:
+  postgres_demo:
+    staging:
+      +materialized: view
+    marts:
+      +materialized: table
