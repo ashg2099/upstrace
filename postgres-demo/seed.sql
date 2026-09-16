@@ -2,7 +2,9 @@
 -- produces the same table everywhere - which is what a determinism test needs.
 
 create schema if not exists raw;
-drop table if exists raw.orders;
+-- CASCADE because dbt's stg_orders view depends on this table. Dropping the
+-- view is safe: `dbt run` rebuilds it on the next line of the workflow.
+DROP TABLE IF EXISTS raw.orders CASCADE;
 
 create table raw.orders as
 select

@@ -43,13 +43,29 @@ def _find_config(start: Path) -> Path | None:
             return candidate
     return None
 
+def _mask_dsn(value: str) -> str:
+    """Replace the password in a connection string with *** before printing.
+
+    `upstrace config` output ends up in terminals, screenshots and CI logs.
+    A DuckDB file path has no credentials, so it passes through untouched.
+    """
+    if "://" not in value:
+        return value
+    scheme, _, rest = value.partition("://")
+    if "@" not in rest:
+        return value
+    credentials, _, host = rest.rpartition("@")
+    user, separator, _password = credentials.partition(":")
+    if not separator:
+        return value
+    return f"{scheme}://{user}:***@{host}"
 
 @dataclass
 class Settings:
     config_path: Path | None
     project_root: Path
     project: str
-    warehouse: Path
+    warehouse: Path | str   # DuckDB: file path. Postgres: connection string.
     dbt_project_dir: Path
     data_dir: Path
     metrics_schema: str
@@ -66,6 +82,7 @@ class Settings:
     baseline_min_history: int = 14
     baseline_min_partition_share: float = 0.2
     severity: dict[str, float] = field(default_factory=lambda: dict(DEFAULT_SEVERITY))
+    dialect: str = "duckdb"
 
     # ---------------------------------------------------------------- selection
 
@@ -138,7 +155,8 @@ class Settings:
         return {
             "config file": str(self.config_path) if self.config_path else "(defaults, no upstrace.yml found)",
             "project": self.project,
-            "warehouse": str(self.warehouse),
+            "dialect": self.dialect,
+            "warehouse": _mask_dsn(str(self.warehouse)),
             "dbt project": str(self.dbt_project_dir),
             "metrics schema": self.metrics_schema,
             "include": ", ".join(self.include),
@@ -180,7 +198,30 @@ def load_settings(config_path: Path | None = None) -> Settings:
     thresholds = raw.get("thresholds") or {}
     baseline = raw.get("baseline") or {}
 
-    warehouse = _resolve(base, os.getenv("UPSTRACE_WAREHOUSE") or raw.get("warehouse") or "warehouse/upstrace.duckdb")
+    dialect = (os.getenv("UPSTRACE_DIALECT") or raw.get("dialect") or "duckdb").lower()
+
+    # DuckDB's warehouse is a file, so it resolves against the project root.
+    # Postgres' warehouse is a DSN — resolving it would turn
+    # "postgresql://user:pw@host/db" into a meaningless absolute path.
+    if dialect == "duckdb":
+        warehouse = _resolve(
+            base,
+            os.getenv("UPSTRACE_WAREHOUSE")
+            or raw.get("warehouse")
+            or "warehouse/upstrace.duckdb",
+        )
+    else:
+        warehouse = str(
+            os.getenv("UPSTRACE_DSN")
+            or os.getenv("UPSTRACE_WAREHOUSE")
+            or raw.get("warehouse")
+            or ""
+        )
+        if not warehouse:
+            raise SystemExit(
+                f"dialect: {dialect} needs a connection string. "
+                "Set `warehouse:` in upstrace.yml or UPSTRACE_DSN in the environment."
+            )
     dbt_dir = _resolve(base, os.getenv("UPSTRACE_DBT_PROJECT_DIR") or raw.get("dbt_project_dir") or "transform")
     data_dir = _resolve(base, raw.get("data_dir") or "data")
 
@@ -188,6 +229,7 @@ def load_settings(config_path: Path | None = None) -> Settings:
         config_path=config_path,
         project_root=base,
         project=raw.get("project") or "upstrace",
+        dialect=dialect,
         warehouse=warehouse,
         dbt_project_dir=dbt_dir,
         data_dir=data_dir,

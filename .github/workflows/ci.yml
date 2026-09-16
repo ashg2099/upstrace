@@ -1,0 +1,158 @@
+# Proves the tool works on every warehouse it claims to support.
+#
+# nightly.yml is a different thing: it injects a fault every night and
+# publishes the resulting report to Pages. That job owns the Pages
+# concurrency group, so a matrix there would have two legs fighting over
+# one deployment. This file runs on every push and pull request, deploys
+# nothing, and answers one question only: does Upstrace still behave the
+# same on DuckDB and on Postgres?
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A second push supersedes the first. No point burning minutes on a commit
+# nobody will look at.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  duckdb:
+    name: DuckDB
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install
+        run: pip install -e . "dbt-core==1.10.*" "dbt-duckdb==1.9.*"
+
+      - name: Build the demo warehouse
+        run: |
+          cp data/demo/*.parquet data/
+          python scripts/build_demo_warehouse.py
+
+      # Two profiles over identical data. previous_run mode compares the last
+      # two runs, so one profile would compare against whatever the build
+      # script left behind and could report a phantom change.
+      - name: Baseline
+        run: |
+          upstrace profile
+          upstrace profile
+
+      # Half the value of a data quality tool is not crying wolf.
+      - name: No false positives on unchanged data
+        run: upstrace drift --fail-on warning
+
+      - name: Inject a unit change
+        run: |
+          upstrace fault unit-change
+          cd transform && dbt run --profiles-dir . && cd ..
+          upstrace profile
+
+      # Inverted on purpose: a clean exit here means the tool stayed quiet
+      # about a fault we know is there, which is the failure we care about.
+      - name: The fault is detected
+        run: |
+          if upstrace drift --fail-on critical; then
+            echo "::error::A unit change was injected and no critical signal was raised."
+            exit 1
+          fi
+
+      # "Something drifted" is a weak claim - four models drifted here. The
+      # claim worth testing is that the source is named as the root and the
+      # three downstream models are not.
+      - name: The root cause is the source, not a downstream model
+        run: |
+          upstrace rca | tee rca.txt
+          grep -q "root: yellow_trips (source)" rca.txt || {
+            echo "::error::Expected yellow_trips to be named as the root cause."
+            exit 1
+          }
+
+  postgres:
+    name: Postgres
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: upstrace
+          POSTGRES_PASSWORD: upstrace
+          POSTGRES_DB: analytics
+        # Mapped to 5433 so CI uses the exact DSN that postgres-demo/
+        # already carries. No env overrides, no second config to drift.
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      PGPASSWORD: upstrace
+
+    defaults:
+      run:
+        working-directory: postgres-demo
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install
+        run: pip install -e "..[postgres]" "dbt-core==1.10.*" "dbt-postgres==1.9.*"
+
+      # psql ships on the GitHub runner, so the same seed.sql that runs
+      # locally through the container runs here directly.
+      - name: Seed the source and build the models
+        run: |
+          psql -h localhost -p 5433 -U upstrace -d analytics -f seed.sql
+          dbt run --profiles-dir .
+
+      # ---- everything below is identical to the DuckDB job, by design ----
+      # The commands do not change per warehouse. That is the whole claim
+      # the dialect layer makes, so the workflow states it literally.
+
+      - name: Baseline
+        run: |
+          upstrace profile
+          upstrace profile
+
+      - name: No false positives on unchanged data
+        run: upstrace drift --fail-on warning
+
+      - name: Inject a unit change
+        run: |
+          psql -h localhost -p 5433 -U upstrace -d analytics -f fault.sql
+          dbt run --profiles-dir .
+          upstrace profile
+
+      - name: The fault is detected
+        run: |
+          if upstrace drift --fail-on critical; then
+            echo "::error::A unit change was injected and no critical signal was raised."
+            exit 1
+          fi
+
+      - name: The root cause is the source, not a downstream model
+        run: |
+          upstrace rca | tee rca.txt
+          grep -q "root: orders (source)" rca.txt || {
+            echo "::error::Expected orders to be named as the root cause."
+            exit 1
+          }

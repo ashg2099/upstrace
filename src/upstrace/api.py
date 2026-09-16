@@ -26,7 +26,7 @@ from . import drift as drift_mod
 from . import explain as explain_mod
 from . import faults as faults_mod
 from . import rca as rca_mod
-from .config import DBT_PROJECT_DIR, METRICS_SCHEMA, PROJECT_ROOT, WAREHOUSE_DB
+from .config import DBT_PROJECT_DIR, METRICS_SCHEMA, PROJECT_ROOT, SETTINGS, WAREHOUSE_DB
 from .lineage import graph
 from .profiler import run_profile
 
@@ -38,9 +38,25 @@ WAREHOUSE_LOCK = threading.Lock()
 STATIC_DIR = PROJECT_ROOT / "app" / "static"
 DEMO_SAMPLE = int(os.environ.get("UPSTRACE_DEMO_SAMPLE", "0")) or None
 
+# The dashboard reads DuckDB directly instead of going through the dialect
+# layer, so it only works on DuckDB projects. Postgres users get a clear
+# message pointing at the commands that are dialect-aware.
+def _warehouse_exists() -> bool:
+    return SETTINGS.dialect == "duckdb" and WAREHOUSE_DB.exists()
+
+
+def _require_duckdb() -> None:
+    if SETTINGS.dialect != "duckdb":
+        raise HTTPException(
+            503,
+            f"The dashboard reads DuckDB directly and does not support dialect "
+            f"'{SETTINGS.dialect}' yet. Use `upstrace drift` and `upstrace report` "
+            f"instead — both work on every supported warehouse.",
+        )
 
 def _connect() -> duckdb.DuckDBPyConnection:
-    if not WAREHOUSE_DB.exists():
+    _require_duckdb()
+    if not _warehouse_exists():
         raise HTTPException(
             503,
             "No warehouse yet. Check the 'warehouse:' path in upstrace.yml, then "
@@ -79,7 +95,8 @@ def _json_safe(value):
 def health() -> dict:
     return {
         "status": "ok",
-        "warehouse": WAREHOUSE_DB.exists(),
+        "dialect": SETTINGS.dialect,
+        "warehouse": _warehouse_exists(),
         "demo_sample": DEMO_SAMPLE,
     }
 
