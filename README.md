@@ -1,6 +1,6 @@
 # Upstrace
 
-[![nightly](https://github.com/ashg2099/upstrace/actions/workflows/nightly.yml/badge.svg)](https://github.com/ashg2099/upstrace/actions/workflows/nightly.yml)  [![PyPI](https://img.shields.io/pypi/v/upstrace)](https://pypi.org/project/upstrace/)
+[![ci](https://github.com/ashg2099/upstrace/actions/workflows/ci.yml/badge.svg)](https://github.com/ashg2099/upstrace/actions/workflows/ci.yml) ![nightly](https://github.com/ashg2099/upstrace/actions/workflows/nightly.yml/badge.svg)  [![PyPI](https://img.shields.io/pypi/v/upstrace)](https://pypi.org/project/upstrace/)
 
 When a data quality check fails, trace it upstream to the change that caused it.
 
@@ -89,19 +89,19 @@ Four steps, each doing one thing:
 
 ## Tech stack
 
-| Layer                 | Choice                                                                         | Why                                                                                                              |
-| --------------------- | ------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
-| Warehouse             | **DuckDB**                                                               | Single file on disk, no server, no cost. Analytical SQL fast enough to profile millions of rows in seconds       |
-| Transformation        | **dbt** (`dbt-core` 1.10, `dbt-duckdb` 1.9)                          | The lineage graph comes free in`manifest.json` — that graph is what makes root-cause analysis possible at all |
-| Profiling / detection | **Python 3.10+**, `duckdb`, `pandas`                                 | Profiles written as one`GROUP BY` per column, inserted in bulk from a DataFrame                                |
-| CLI                   | **Typer** + **Rich**                                               | Subcommands,`--help`, formatted tables                                                                         |
-| Config                | **PyYAML** (`upstrace.yml`)                                            | Nothing project-specific lives in Python                                                                         |
-| API                   | **FastAPI** + **Uvicorn**                                          | One process serves JSON and the built SPA                                                                        |
-| Dashboard             | **React 18** + **Vite**                                            | Hand-written SVG charts and lineage graph, no chart library                                                      |
-| Alerting              | **Slack incoming webhooks** (stdlib `urllib`)                          | Root-cause summary in a channel, with no HTTP dependency added                                                   |
-| LLM                   | **Groq** (`qwen/qwen3.8-27b`), with Gemini, Ollama and a mock provider | Free tier, structured JSON output, responses cached by prompt hash and committed                                 |
-| Packaging             | **Hatchling**, **PyPI**, **Docker** (two build targets)      | `pip install upstrace`, or `docker build --target runtime`                                                   |
-| Dataset               | **NYC TLC yellow taxi**, Jan–Mar 2024 (9.5M rows)                       | Public, messy, and has real date grain                                                                           |
+| Layer                 | Choice                                                                         | Why                                                                                                                                                               |
+| --------------------- | ------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Warehouse             | **DuckDB** or **PostgreSQL**                                       | DuckDB is one file on disk, no server, no cost, fast enough to profile millions of rows in seconds. Postgres is the second dialect. Both run in CI on every push |
+| Transformation        | **dbt** (`dbt-core` 1.10, `dbt-duckdb` 1.9 / `dbt-postgres` 1.9)   | The lineage graph comes free in`manifest.json` — that graph is what makes root-cause analysis possible at all                                                  |
+| Profiling / detection | **Python 3.10+**, `pandas`, one dialect class per warehouse            | Profiles written as one`GROUP BY` per column, inserted in bulk from a DataFrame                                                                                 |
+| CLI                   | **Typer** + **Rich**                                               | Subcommands,`--help`, formatted tables                                                                                                                          |
+| Config                | **PyYAML** (`upstrace.yml`)                                            | Nothing project-specific lives in Python                                                                                                                          |
+| API                   | **FastAPI** + **Uvicorn**                                          | One process serves JSON and the built SPA                                                                                                                         |
+| Dashboard             | **React 18** + **Vite**                                            | Hand-written SVG charts and lineage graph, no chart library                                                                                                       |
+| Alerting              | **Slack incoming webhooks** (stdlib `urllib`)                          | Root-cause summary in a channel, with no HTTP dependency added                                                                                                    |
+| LLM                   | **Groq** (`qwen/qwen3.8-27b`), with Gemini, Ollama and a mock provider | Free tier, structured JSON output, responses cached by prompt hash and committed                                                                                  |
+| Packaging             | **Hatchling**, **PyPI**, **Docker** (two build targets)      | `pip install upstrace`, or `docker build --target runtime`                                                                                                    |
+| Dataset               | **NYC TLC yellow taxi**, Jan–Mar 2024 (9.5M rows)                       | Public, messy, and has real date grain                                                                                                                            |
 
 Everything in this project runs on free tiers or on your own machine. There is no
 paid dependency anywhere.
@@ -531,8 +531,9 @@ Both the thresholds and these multipliers are configurable per node.
 
 ### Where it is all stored
 
-Everything Upstrace records lives in a `upstrace_meta` schema inside the same
-DuckDB file — so it is queryable with plain SQL:
+Everything Upstrace records lives in an `upstrace_meta` schema inside the
+warehouse it is watching, the DuckDB file, or the Postgres database, so it is
+queryable with plain SQL alongside your own tables:
 
 | Table                  | Contents                                                                        |
 | ---------------------- | ------------------------------------------------------------------------------- |
@@ -609,10 +610,12 @@ Interactive API docs at `/api/docs`.
 
 ## Run it on your own dbt project
 
+- [Warehouses](#warehouses)
+
 The engine names no table and no dataset. It reads whatever dbt manifest you
 point it at.
 
-**Requirements:** a dbt project with a DuckDB target, and at least one date or
+**Requirements:** a dbt project on DuckDB or PostgreSQL, and at least one date or
 timestamp column on the tables you care about.
 
 ### 1. Install Upstrace
@@ -637,7 +640,7 @@ upstrace init
 ```
 
 This writes `upstrace.yml` in the current directory. Open it and set the two
-paths that matter:
+settings that matter:
 
 ```yaml
 project: my-project
@@ -645,7 +648,16 @@ warehouse: ./warehouse/analytics.duckdb   # your .duckdb file
 dbt_project_dir: .                        # where dbt_project.yml lives
 ```
 
-Both are resolved relative to `upstrace.yml` itself, so relative paths are fine.
+On Postgres, name the dialect and give a connection string in place of a path:
+
+```yaml
+project: my-project
+dialect: postgres
+warehouse: postgresql://user:password@host:5432/database
+dbt_project_dir: .
+```
+
+Paths resolve relative to `upstrace.yml` itself, so relative ones are fine. A connection string is left alone. Full walkthrough: [docs/postgres.md](docs/postgres.md).
 
 ### 4. Check what resolved
 
@@ -729,6 +741,57 @@ demo with nothing to set up.
 
 ---
 
+## Warehouses
+
+Upstrace runs on DuckDB and on PostgreSQL. Every expression that differs between
+them — `DESCRIBE` versus `information_schema.columns`, float rounding, bulk
+insert, parameter style — lives in `src/upstrace/dialect.py` behind a
+seven-method interface. Nothing else in the codebase knows which warehouse it is
+talking to.
+
+Both are exercised by [the same workflow](.github/workflows/ci.yml) on every
+push: profile twice over unchanged data and assert silence, then inject a unit
+change into the source and assert that **the source is named as the root cause**
+— not merely that something drifted. On Postgres that fault raises 22 signals
+and 21 of them are downstream, so asserting the root is the only check that
+would catch a broken lineage rule.
+
+### PostgreSQL
+
+```bash
+pip install "upstrace[postgres]"
+```
+
+Then in `upstrace.yml`:
+
+```yaml
+dialect: postgres
+warehouse: postgresql://user:password@localhost:5432/analytics
+```
+
+That is the entire change. Every command behaves the same:
+
+```bash
+upstrace models
+upstrace profile
+upstrace drift
+upstrace rca
+```
+
+`upstrace config` masks the password, so its output is safe to paste into an
+issue or a screenshot.
+
+A complete worked example — a dbt project, a deterministic 90-day seed, and a
+fault to inject — lives in [`postgres-demo/`](postgres-demo/). See
+[docs/postgres.md](docs/postgres.md) for how to run it.
+
+### Adding another warehouse
+
+Subclass `Dialect` in `dialect.py`, implement the seven abstract methods, and
+register it in `get_dialect()`. Nothing outside that file changes. The DuckDB
+and Postgres classes are about sixty lines each and sit side by side as
+reference.
+
 ## Configuration reference
 
 Every key in `upstrace.yml`, with its default:
@@ -737,7 +800,12 @@ Every key in `upstrace.yml`, with its default:
 # Name shown by `upstrace config`. Cosmetic.
 project: my-project
 
-# Path to the DuckDB file. Relative paths resolve against this config file.
+# Which SQL dialect to speak: duckdb (default) or postgres.
+dialect: duckdb
+
+# Where the data lives. On DuckDB this is a path to the database file and a
+# relative path resolves against this config file. On Postgres it is a
+# connection string, and `upstrace config` masks the password when printing it.
 warehouse: warehouse/upstrace.duckdb
 
 # Directory containing dbt_project.yml. The manifest is read from
@@ -904,7 +972,7 @@ controls**.
 | Fully correct               | **55 / 56 (98%)** |
 | False positives on controls | **0 / 4**         |
 
-Full per-scenario output: [`docs/eval-results.md`](docs/eval-results.md).
+Aggregate results: [`docs/eval-results.md`](docs/eval-results.md). Per-scenario rows are printed by `upstrace eval` as it runs — the report file holds the totals, not the individual scenarios.
 Model comparison: [`docs/model-comparison.md`](docs/model-comparison.md).
 
 ### Verified on a second dataset
@@ -989,9 +1057,6 @@ Stated plainly, because scope questions get asked:
 
 - **dbt is required.** Lineage comes from `manifest.json`. Without it there is no
   basis for root-cause analysis, only alerts.
-- **DuckDB only.** The profiler's SQL is DuckDB dialect. A Snowflake or BigQuery
-  adapter would touch exactly one file, `profiler.py`, but that file has not been
-  written.
 - **Cannot detect a fault that predates its baseline.** `previous_run` compares
   against the last run and `rolling` against a trailing window, so a defect that
   was already there before either window began reads as normal. Changepoint
@@ -1003,6 +1068,15 @@ Stated plainly, because scope questions get asked:
   intended production shape is a step after `dbt run` in CI or Airflow — see
   [running it on a schedule](#on-a-schedule).
   [`.github/workflows/nightly.yml`](.github/workflows/nightly.yml) does exactly that against the demo data every night.
+- **Two warehouses, not all of them.** DuckDB and PostgreSQL are supported and
+  both run in CI on every push. Snowflake, BigQuery and Redshift are not. Every
+  warehouse-specific expression lives in `dialect.py`, so adding one means
+  implementing seven methods in that one file — but nobody has written them.
+- **The dashboard is DuckDB-only.** The FastAPI app (`uvicorn upstrace.api:app`)
+  reads DuckDB directly rather than going through the dialect layer, and returns
+  a 503 saying so on a Postgres project. `drift`, `rca` and `report` work on both.
+- **The fault-injection benchmark is DuckDB-only.** It is a test fixture built on
+  `read_parquet`, not part of the engine.
 
 ---
 
@@ -1012,7 +1086,8 @@ Stated plainly, because scope questions get asked:
 src/upstrace/        the engine - names no table, no dataset
   settings.py        upstrace.yml: paths, globs, thresholds, partition axis
   config.py          resolved paths, a thin façade over settings
-  warehouse.py       DuckDB connection and the upstrace_meta tables
+  warehouse.py       connection handling and the upstrace_meta tables
+  dialect.py         every expression that differs per warehouse, in one place
   manifest.py        read dbt manifest.json into nodes and edges
   profiler.py        whole-table and per-partition column profiles
   drift.py           threshold comparison and severity
@@ -1029,12 +1104,14 @@ src/upstrace/        the engine - names no table, no dataset
   cli.py             every upstrace command
 
 transform/           the demo dbt project - staging and marts over NYC taxi data
+postgres-demo/       the same shape on Postgres - seed, models, and a fault to inject
 app/                 React + Vite dashboard
 scripts/             data download, warehouse load, demo sample, Docker build
 cache/llm/           committed LLM responses, keyed by prompt hash
-docs/                eval results, model comparison, screenshots
+docs/                eval results, model comparison, the Postgres guide, screenshots
 upstrace.yml         configuration for the demo project
 Dockerfile           two targets: runtime (tool only), demo (tool + data)
+.github/workflows/   ci: both dialects on every push. nightly: self-check + Pages
 ```
 
 `transform/`, `faults.py` and `scenarios.py` are the demo pipeline and the
